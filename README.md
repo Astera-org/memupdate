@@ -42,31 +42,26 @@ MemUpdate is an experimental project that explores self-refining memory in LLMs 
      sleep infinity
    ```
 
-2. **Install Python 3.11 (Required for langmem)**:
+2. **Install Required Dependencies**:
    ```bash
+   # Install langmem for Python 3.10 (container default)
+   docker exec verl_container bash -c "python3 -m pip install langmem"
+   
+   # Apply langmem Python 3.10 compatibility patch
+   # (fixes typing.NotRequired which is only available in Python 3.11+)
    docker exec verl_container bash -c "
-     apt update && 
-     apt install -y software-properties-common && 
-     add-apt-repository ppa:deadsnakes/ppa -y && 
-     apt update && 
-     apt install -y python3.11 python3.11-dev python3.11-venv && 
-     curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+     sed -i 's/typing.NotRequired/typing_extensions.NotRequired/g' /usr/local/lib/python3.10/dist-packages/langmem/knowledge/extraction.py && 
+     sed -i '/^import typing$/a import typing_extensions' /usr/local/lib/python3.10/dist-packages/langmem/knowledge/extraction.py
    "
-   ```
-
-3. **Install Required Dependencies**:
-   ```bash
-   # Install langmem (only additional dependency needed)
-   docker exec verl_container bash -c "python3.11 -m pip install langmem"
    
    # Install memupdate package (no deps to avoid version conflicts)
    docker exec verl_container bash -c "
      cd /workspace/memupdate && 
-     python3.11 -m pip install -e . --no-deps
+     python3 -m pip install -e . --no-deps
    "
    ```
 
-4. **Apply Required Patches**:
+3. **Apply Required Patches**:
    ```bash
    # Apply data format fix for JSON deserialization
    docker exec verl_container bash -c "cd /workspace/memupdate && python3 fix_rl_dataset.py"
@@ -196,7 +191,8 @@ memupdate/
    - Make sure you're running inside the verl Docker container
 
 2. **"typing.NotRequired not found"**:
-   - Ensure Python 3.11 is installed and used (langmem requirement)
+   - The langmem compatibility patch should be applied automatically in step 2
+   - If still encountering this error, manually run the sed commands from the setup
 
 3. **"Unknown reward manager: memory_rag"**:
    - Apply the reward loading patch: `python3 patch_reward_loading.py`
@@ -212,6 +208,27 @@ memupdate/
 - **Container stops**: Use `sleep infinity` to keep container running
 - **GPU not accessible**: Ensure `--gpus all` flag is used
 - **Volume mounting**: Check paths are correctly mounted to `/workspace/`
+
+## 🔧 **Technical Details**
+
+### **LangMem Python 3.10 Compatibility Patch**
+
+The verl Docker container uses Python 3.10, but langmem uses `typing.NotRequired` which was introduced in Python 3.11. Our patch fixes this by:
+
+1. **Root Cause**: `langmem/knowledge/extraction.py` uses `typing.NotRequired`
+2. **Solution**: Replace with `typing_extensions.NotRequired` (available in Python 3.10)
+3. **Implementation**: 
+   ```bash
+   # Replace typing.NotRequired with typing_extensions.NotRequired
+   sed -i 's/typing.NotRequired/typing_extensions.NotRequired/g' \
+     /usr/local/lib/python3.10/dist-packages/langmem/knowledge/extraction.py
+   
+   # Add typing_extensions import
+   sed -i '/^import typing$/a import typing_extensions' \
+     /usr/local/lib/python3.10/dist-packages/langmem/knowledge/extraction.py
+   ```
+
+This allows the entire pipeline to run with Python 3.10, avoiding version conflicts with the pre-installed verl/sglang packages.
 
 ## 📊 **Success Metrics**
 
