@@ -99,25 +99,82 @@ class LoCoMoProcessor:
         return memories
 
     def create_verl_training_data(self, qa_trials: List[Dict]) -> List[Dict]:
-        """Convert QA trials to verl training format."""
+        """Convert QA trials to verl training format with full context in messages."""
         training_data = []
         
         for idx, trial in enumerate(qa_trials):
             # Extract initial memories from conversation facts
             initial_memories = self.convert_facts_to_memories(trial["facts"])
             
+            # Don't hardcode memory in prompt - let LLM discover via tool calls!
+            
+            # Create comprehensive system prompt with all context
+            system_content = """You are a memory management agent with access to memory tools. Your task is to analyze the current memory database and use the available tools to optimize it for better question answering.
+
+Available tools:
+- search_memory: Search and retrieve relevant memories
+- manage_memory: Create or update memory entries
+- delete_memory: Remove outdated or irrelevant memories  
+- sample_memory: Sample diverse memories for analysis
+- merge_memory: Consolidate related memories
+- split_memory: Break down complex memories
+
+Use these tools strategically to improve the memory database for the target question. 
+
+IMPORTANT: Call functions using this EXACT JSON format:
+{
+  "tool_calls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "search_memory",
+        "arguments": {"query": "your search query here", "limit": 5}
+      }
+    }
+  ]
+}
+
+For manage_memory:
+{
+  "tool_calls": [
+    {
+      "type": "function", 
+      "function": {
+        "name": "manage_memory",
+        "arguments": {"operation": "create", "content": "memory content", "memory_type": "episodic"}
+      }
+    }
+  ]
+}
+
+For delete_memory:
+{
+  "tool_calls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_memory", 
+        "arguments": {"memory_ids": ["id1", "id2"]}
+      }
+    }
+  ]
+}
+
+Always use this exact structure for tool calls."""
+
+            # Create user prompt - LLM must use tools to discover memory state
+            user_content = f"""Target question to optimize for: {trial['question']}
+
+Please analyze and update the memory database to ensure this question can be answered correctly. 
+
+IMPORTANT: Start by calling search_memory() to see what information is currently stored in the memory database, then use the other tools as needed to optimize it for answering the target question."""
+
             # IMPORTANT: verl expects these exact keys in this format
             record = {
-                # OpenAI chat format messages
+                # OpenAI chat format messages - agent sees EVERYTHING here
                 "messages": [
-                    {
-                        "role": "system", 
-                        "content": "You are a memory management agent. Update the memory database to better answer future questions."
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Target question to optimize for: {trial['question']}\n\nAnalyze and update the memory database to ensure this question can be answered correctly."
-                    }
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": user_content}
                 ],
                 "prompt": f"Target question: {trial['question']}",  # Fallback prompt field
                 "data_source": f"locomo-{trial['sample_id']}",
@@ -125,25 +182,31 @@ class LoCoMoProcessor:
                     "index": idx,
                     "need_tools_kwargs": True,  # CRITICAL: This enables tool usage
                     "tools_kwargs": {
-                        # Each tool needs namespace for conversation isolation
+                        # Each tool needs namespace for conversation isolation and initial memory loading
                         "search_memory": {
+                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
                             "execute_kwargs": {"namespace": trial['sample_id']},
                             "calc_reward_kwargs": {"namespace": trial['sample_id']}
                         },
                         "manage_memory": {
+                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
                             "execute_kwargs": {"namespace": trial['sample_id']},
                             "calc_reward_kwargs": {"namespace": trial['sample_id']}
                         },
                         "delete_memory": {
+                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
                             "execute_kwargs": {"namespace": trial['sample_id']}
                         },
                         "sample_memory": {
+                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
                             "execute_kwargs": {"namespace": trial['sample_id']}
                         },
                         "merge_memory": {
+                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
                             "execute_kwargs": {"namespace": trial['sample_id']}
                         },
                         "split_memory": {
+                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
                             "execute_kwargs": {"namespace": trial['sample_id']}
                         }
                     },
@@ -215,7 +278,7 @@ Begin optimizing the memory database now."""
         train_data = self.create_verl_training_data(train_trials)
         test_data = self.create_verl_training_data(test_trials)
         
-        # Save as parquet - convert complex objects to JSON strings
+        # Save as parquet - convert complex objects to JSON strings for parquet compatibility
         import json
         
         def serialize_complex_fields(df):
@@ -230,8 +293,8 @@ Begin optimizing the memory database now."""
         train_df = serialize_complex_fields(pd.DataFrame(train_data))
         test_df = serialize_complex_fields(pd.DataFrame(test_data))
         
-        train_df.to_parquet(f"{output_dir}/train.parquet", index=False)
-        test_df.to_parquet(f"{output_dir}/test.parquet", index=False)
+        train_df.to_parquet(f"{output_dir}/train_corrected.parquet", index=False)
+        test_df.to_parquet(f"{output_dir}/test_corrected.parquet", index=False)
         
         print(f"✅ Saved {len(train_data)} training samples to {output_dir}/train.parquet")
         print(f"✅ Saved {len(test_data)} test samples to {output_dir}/test.parquet")

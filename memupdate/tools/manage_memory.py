@@ -1,6 +1,7 @@
 """Memory management tool - wraps LangMem management functionality in verl BaseTool interface."""
 
 import logging
+import os
 from typing import Any, Optional
 
 try:
@@ -22,11 +23,26 @@ from verl.tools.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Set up debug logging to file if requested
+def _debug_log(message: str):
+    """Log debug message to file if MEMUPDATE_TOOL_DEBUG is set."""
+    if os.getenv('MEMUPDATE_TOOL_DEBUG'):
+        log_file = os.getenv('MEMUPDATE_LOG_FILE', '/workspace/memupdate/tool_debug.log')
+        try:
+            with open(log_file, 'a') as f:
+                f.write(f"[ManageMemoryTool] {message}\n")
+                f.flush()
+        except:
+            pass
+    logger.info(f"[TOOL] {message}")
+
 
 class ManageMemoryTool(BaseTool):
     """Memory management tool that wraps LangMem management functionality."""
 
     def __init__(self, config: dict, tool_schema: Optional[OpenAIFunctionToolSchema] = None):
+        _debug_log("🔧 Initializing ManageMemoryTool...")
+        
         if tool_schema is None:
             tool_schema = self.get_openai_tool_schema()
         super().__init__(config, tool_schema)
@@ -38,21 +54,21 @@ class ManageMemoryTool(BaseTool):
         # Initialize LangMem components
         self.langmem_manage = None
         self._init_langmem()
+        
+        _debug_log(f"✅ ManageMemoryTool initialized (LangMem available: {self.langmem_manage is not None})")
 
     def _init_langmem(self):
         """Initialize LangMem components."""
         if create_manage_memory_tool is None or InMemoryStore is None:
+            _debug_log("❌ LangMem imports not available (langmem or langgraph missing)")
             logger.warning("LangMem not available, using mock implementation")
             return
             
         try:
-            # Initialize memory store with embedding configuration
-            self.store = InMemoryStore(
-                index={
-                    "dims": 1536,
-                    "embed": "openai:text-embedding-3-small",
-                }
-            )
+            # Create simple text-based store without embeddings
+            # This uses exact string matching which is sufficient for our use case
+            self.store = InMemoryStore()
+            logger.info("Using text-based InMemoryStore (no embeddings required)")
             
             # Create LangMem management tool
             self.langmem_manage = create_manage_memory_tool(
@@ -106,8 +122,26 @@ class ManageMemoryTool(BaseTool):
             )
         )
 
+    async def create(self, instance_id: Optional[str] = None, **kwargs) -> tuple[str, ToolResponse]:
+        """Create a manage tool instance with initial memory loading."""
+        from uuid import uuid4
+        if instance_id is None:
+            instance_id = str(uuid4())
+        
+        # Initialize memory store with initial memories if provided
+        initial_memories = kwargs.get('initial_memories', [])
+        namespace = kwargs.get('namespace', instance_id)
+        
+        if initial_memories:
+            self.store_manager.init_store_with_memories(namespace, initial_memories)
+            return instance_id, ToolResponse(text=f"Memory management tool initialized with {len(initial_memories)} memories in namespace '{namespace}'")
+        else:
+            self.store_manager.get_or_create_store(namespace)  # Ensure store exists
+            return instance_id, ToolResponse(text=f"Memory management tool initialized with empty store in namespace '{namespace}'")
+
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         """Execute memory management operation."""
+        _debug_log(f"🛠️  ManageMemoryTool.execute called with operation: {parameters.get('operation', 'N/A')}")
         try:
             # Get namespace from kwargs
             namespace = kwargs.get("namespace", instance_id)

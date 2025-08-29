@@ -32,6 +32,31 @@ export PYTHONPATH="/workspace/verl:/workspace/memupdate:$PYTHONPATH"
 # Ensure memupdate is imported for reward manager registration
 python3 -c "import memupdate; print('✅ MemoryRewardManager registered')"
 
+
+LOG_DIR="/workspace/memupdate/debug_logs"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+MAIN_LOG="$LOG_DIR/training_${TIMESTAMP}.log"
+TOOL_LOG="$LOG_DIR/tools_${TIMESTAMP}.log"
+
+echo "📁 Creating log directory..."
+mkdir -p "$LOG_DIR"
+
+echo ""
+echo "🔍 Running diagnostic (logged to $LOG_DIR/diagnostic_${TIMESTAMP}.log)..."
+cd $MEMUPDATE_DIR && python3 diagnose_tools.py 2>&1 | tee "$LOG_DIR/diagnostic_${TIMESTAMP}.log"
+
+cd $PROJECT_DIR
+
+echo ""
+echo "🚀 Starting training with detailed logging..."
+echo "   Main log: $MAIN_LOG"
+echo "   Tool debug: $TOOL_LOG" 
+echo ""
+
+# Set environment variable for tool debugging
+export MEMUPDATE_TOOL_DEBUG=1
+export MEMUPDATE_LOG_FILE="$TOOL_LOG"
+
 # Run training with Ray package distribution and registration script
 RAY_runtime_env_py_modules='["/workspace/memupdate"]' RAY_runtime_env_worker_process_setup_hook='/workspace/memupdate/ensure_registration.py' python3 -m verl.trainer.main_ppo \
     --config-path="$PROJECT_DIR/examples/sglang_multiturn/config" \
@@ -76,13 +101,26 @@ RAY_runtime_env_py_modules='["/workspace/memupdate"]' RAY_runtime_env_worker_pro
     trainer.test_freq=5 \
     trainer.total_training_steps=5 \
     actor_rollout_ref.rollout.multi_turn.enable=True \
+    actor_rollout_ref.rollout.multi_turn.format='qwen' \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=30 \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$MEMUPDATE_DIR/configs/tool_config/memory_tools.yaml" \
-    data.train_files="$MEMUPDATE_DIR/data/locomo/train.parquet" \
-    data.val_files="$MEMUPDATE_DIR/data/locomo/test.parquet" \
+    data.train_files="$MEMUPDATE_DIR/data/locomo/train_corrected.parquet" \
+    data.val_files="$MEMUPDATE_DIR/data/locomo/test_corrected.parquet" \
     trainer.total_epochs=1 \
-    reward_model.reward_manager=memory_rag
+    reward_model.reward_manager=memory_rag \
+    2>&1 | tee "$MAIN_LOG"
 
+echo ""
+echo "📋 Training completed! Check logs:"
+echo "   📊 Main training: $MAIN_LOG"
+echo "   🛠️  Tool debugging: $TOOL_LOG"
+echo "   🔍 Diagnostic: $LOG_DIR/diagnostic_${TIMESTAMP}.log"
+echo ""
 
-echo "Training completed!"
-echo "Check outputs directory for results and logs."
+# Show quick summary
+echo "📈 Quick Results Summary:"
+echo "----------------------------------------"
+grep -E "(memory_reward/mean|tool_calls/mean|initial_memory_count|final_memory_count)" "$MAIN_LOG" | tail -10
+echo "----------------------------------------"
+
+echo "----------------------------------------"

@@ -8,6 +8,7 @@ MemUpdate is an experimental project that explores self-refining memory in LLMs 
 ✅ **Custom Reward System**: Memory-aware reward computation operational  
 ✅ **Multi-turn Tool Calling**: 6 memory management tools fully integrated  
 ✅ **Docker-based Deployment**: Production-ready distributed training  
+✅ **Corrected Architecture**: LLM discovers memory via function calls (not hardcoded prompts)
 
 ## Overview
 
@@ -99,23 +100,27 @@ This will start:
 
 ## 🛠 **Architecture**
 
-### Training Pipeline
+### Corrected Memory Flow
 
 ```
 LoCoMo Dataset (1,986 QA pairs)
     ↓
-Ray Distributed Training
+Initial memories loaded into tool state (via create_kwargs)
     ↓
-SGLang Multi-turn Tool Calling
+LLM calls search_memory() to discover current memory
     ↓
-6 Memory Management Tools
+LLM uses manage/delete/merge tools to optimize memory
     ↓
-Custom MemoryRewardManager
+Custom MemoryRewardManager compares initial vs final
     ↓
-GRPO Policy Updates
+GRPO Policy Updates via Ray + SGLang
     ↓
 WandB Metrics Dashboard
 ```
+
+### Key Improvement
+- **❌ Before**: Memory hardcoded in system prompts (LLM passive recipient)
+- **✅ Now**: Memory in tool state, LLM actively discovers via function calls
 
 ### Memory Tools
 
@@ -211,24 +216,15 @@ memupdate/
 
 ## 🔧 **Technical Details**
 
-### **LangMem Python 3.10 Compatibility Patch**
+### **Key Technical Improvements**
 
-The verl Docker container uses Python 3.10, but langmem uses `typing.NotRequired` which was introduced in Python 3.11. Our patch fixes this by:
+1. **Memory Initialization**: Tools receive `create_kwargs` with initial memories and namespace isolation
+2. **Function Call Discovery**: LLM must call `search_memory()` to see current state (no hardcoded prompts)
+3. **Tool State Management**: `MemoryStoreManager` provides namespace-isolated memory stores
+4. **Standard Verl Integration**: Uses original verl codebase with no modifications needed
 
-1. **Root Cause**: `langmem/knowledge/extraction.py` uses `typing.NotRequired`
-2. **Solution**: Replace with `typing_extensions.NotRequired` (available in Python 3.10)
-3. **Implementation**: 
-   ```bash
-   # Replace typing.NotRequired with typing_extensions.NotRequired
-   sed -i 's/typing.NotRequired/typing_extensions.NotRequired/g' \
-     /usr/local/lib/python3.10/dist-packages/langmem/knowledge/extraction.py
-   
-   # Add typing_extensions import
-   sed -i '/^import typing$/a import typing_extensions' \
-     /usr/local/lib/python3.10/dist-packages/langmem/knowledge/extraction.py
-   ```
-
-This allows the entire pipeline to run with Python 3.10, avoiding version conflicts with the pre-installed verl/sglang packages.
+### **LangMem Python 3.10 Compatibility**
+The system includes automatic patches for Python 3.10 compatibility with langmem dependencies.
 
 ## 📊 **Success Metrics**
 
