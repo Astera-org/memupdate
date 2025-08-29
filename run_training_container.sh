@@ -27,7 +27,13 @@ fi
 # Run verl training using existing GSM8K config as base
 echo "Starting GRPO training with verl..."
 
-RAY_runtime_env_py_modules='["/workspace/memupdate"]' python3 -m verl.trainer.main_ppo \
+export PYTHONPATH="/workspace/verl:/workspace/memupdate:$PYTHONPATH"
+
+# Ensure memupdate is imported for reward manager registration
+python3 -c "import memupdate; print('✅ MemoryRewardManager registered')"
+
+# Run training with Ray package distribution and registration script
+RAY_runtime_env_py_modules='["/workspace/memupdate"]' RAY_runtime_env_worker_process_setup_hook='/workspace/memupdate/ensure_registration.py' python3 -m verl.trainer.main_ppo \
     --config-path="$PROJECT_DIR/examples/sglang_multiturn/config" \
     --config-name='gsm8k_multiturn_grpo' \
     algorithm.adv_estimator=grpo \
@@ -69,7 +75,8 @@ RAY_runtime_env_py_modules='["/workspace/memupdate"]' python3 -m verl.trainer.ma
     trainer.total_training_steps=3 \
     data.train_files="$MEMUPDATE_DIR/data/locomo/train.parquet" \
     data.val_files="$MEMUPDATE_DIR/data/locomo/test.parquet" \
-    trainer.total_epochs=1
+    trainer.total_epochs=1 \
+    reward_model.reward_manager=memory_rag
 
 echo "Training completed!"
 echo "Check outputs directory for results and logs."

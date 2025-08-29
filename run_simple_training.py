@@ -79,11 +79,12 @@ sys.argv = [
     'data.train_files=/workspace/memupdate/data/locomo/train.parquet',
     'data.val_files=/workspace/memupdate/data/locomo/test.parquet',
     'trainer.total_epochs=1',
-    # MEMUPDATE: Add our custom reward manager (+ prefix to add new config section)
-    '+reward.manager_class=memory_rag',
-    '+reward.config.max_total_memories=100',
-    '+reward.config.evaluator_model=openai:gpt-4o-mini',
-    '+reward.config.use_llm_judge=true'
+    # MEMUPDATE: Configure custom reward manager (correct Hydra path)
+    'reward_model.reward_manager=memory_rag',
+    # Reward manager config (if needed)
+    '+reward_manager_config.max_total_memories=100',
+    '+reward_manager_config.evaluator_model=openai:gpt-4o-mini',
+    '+reward_manager_config.use_llm_judge=true'
 ]
 
 print("Starting MemUpdate RL training with distributed Ray setup...")
