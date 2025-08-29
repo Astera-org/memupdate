@@ -608,16 +608,28 @@ if "messages" in row_dict and isinstance(row_dict["messages"], str):
 ✅ Validation: Reached validation phase on test data
 ```
 
-#### **🔧 FINAL 2% - REWARD MANAGER REGISTRATION:**
+#### **🔧 FINAL 2% - REWARD MANAGER REGISTRATION (ATTEMPTED FIX):**
 
-**Single Remaining Issue**:
+**Issue**: Training using default naive reward manager instead of our custom MemoryRewardManager
 ```python
 KeyError: 'reward_model'
-# The default naive reward manager expects different data format
-# Our custom MemoryRewardManager needs to be properly registered
+# Error occurs in naive reward manager:
+# data_item.non_tensor_batch["reward_model"]["ground_truth"]
+# But our data doesn't have this structure
 ```
 
-**Status**: Training infrastructure 100% working, just needs reward configuration.
+**Attempted Fix**: Added Hydra configuration overrides to training script:
+```python
+# Added to sys.argv in run_simple_training.py:
+'+reward.manager_class=memory_rag',
+'+reward.config.max_total_memories=100', 
+'+reward.config.evaluator_model=openai:gpt-4o-mini',
+'+reward.config.use_llm_judge=true'
+```
+
+**Result**: Still using naive reward manager. Reward configuration not properly applied.
+
+**Status**: Training reaches validation phase successfully, fails at reward computation.
 
 #### **📊 COMPLETE PIPELINE VERIFICATION:**
 
