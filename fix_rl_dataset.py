@@ -276,8 +276,25 @@ def collate_fn(data_list: list[dict]) -> dict:
             else:
                 non_tensors[key].append(val)
 
+    # Handle variable-length sequences by padding to max length
     for key, val in tensors.items():
-        tensors[key] = torch.stack(val, dim=0)
+        if len(val) > 0 and val[0].dim() == 1:  # 1D tensors (sequences)
+            # Find max length in batch
+            max_len = max(tensor.size(0) for tensor in val)
+            # Pad all tensors to max length
+            padded_tensors = []
+            for tensor in val:
+                if tensor.size(0) < max_len:
+                    # Pad with zeros (common for token sequences)
+                    padding = torch.zeros(max_len - tensor.size(0), dtype=tensor.dtype, device=tensor.device)
+                    padded_tensor = torch.cat([tensor, padding], dim=0)
+                    padded_tensors.append(padded_tensor)
+                else:
+                    padded_tensors.append(tensor)
+            tensors[key] = torch.stack(padded_tensors, dim=0)
+        else:
+            # For non-sequence tensors, stack normally
+            tensors[key] = torch.stack(val, dim=0)
 
     for key, val in non_tensors.items():
         non_tensors[key] = np.fromiter(val, dtype=object, count=len(val))
