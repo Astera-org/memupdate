@@ -1,0 +1,111 @@
+hydra:
+  searchpath:
+    - file:///workspace/verl/verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+# MemUpdate GRPO Training Configuration
+# Based on verl training patterns for memory update RL
+
+# Algorithm configuration
+algorithm:
+  name: "grpo"
+  adv_estimator: "grpo"
+  use_kl_in_reward: false
+
+# Data configuration
+data:
+  train_batch_size: 64
+  val_batch_size: 32
+  max_prompt_length: 1024
+  max_response_length: 1024
+  filter_overlong_prompts: true
+  truncation: "error"
+  return_raw_chat: true
+  train_files: "/workspace/memupdate/data/locomo/train.parquet"
+  val_files: "/workspace/memupdate/data/locomo/test.parquet"
+
+# Model configuration
+actor_rollout_ref:
+  model:
+    path: "Qwen/Qwen2.5-3B-Instruct"
+    use_remove_padding: true
+    enable_gradient_checkpointing: true
+  
+  actor:
+    optim:
+      lr: 1e-6
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size_per_gpu: 8
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+    kl_loss_type: "low_var_kl"
+    entropy_coeff: 0
+  
+  rollout:
+    name: "sglang"
+    mode: "async"
+    gpu_memory_utilization: 0.5
+    log_prob_micro_batch_size_per_gpu: 8
+    tensor_model_parallel_size: 1
+    n: 1
+    multi_turn:
+      enable: true
+      max_assistant_turns: 30  # Up to 30 memory operations as specified in design
+      tool_config_path: "/workspace/memupdate/configs/tool_config/memory_tools.yaml"
+  
+  ref:
+    log_prob_micro_batch_size: 8
+
+# Training configuration  
+trainer:
+  critic_warmup: 0
+  logger: '["console", "wandb"]'
+  project_name: "memupdate-rl"
+  experiment_name: "qwen2.5-3b-memory-grpo"
+  n_gpus_per_node: 1  # Adjust based on available hardware
+  nnodes: 1
+  save_freq: -1  # Don't save checkpoints by default
+  test_freq: 25  # Evaluate every 25 training steps
+  total_training_steps: 1347  # One step per QA pair in training set
+  total_epochs: 1
+
+# Reward configuration
+reward:
+  manager_class: "memory_rag"
+  config:
+    max_total_memories: 100
+    evaluator_model: "openai:gpt-4o-mini"
+    use_llm_judge: true
+    performance_weight: 0.8
+    efficiency_weight: 0.2
+
+# Memory initialization
+memory:
+  initial_memories_per_conversation: 25  # Average from LoCoMo facts
+  memory_types: ["episodic", "semantic", "procedural"]
+  enable_memory_persistence: false  # Fresh memory per episode
+
+# Evaluation settings
+evaluation:
+  metrics:
+    - "qa_accuracy"
+    - "memory_efficiency" 
+    - "tool_usage_stats"
+    - "episode_length"
+  save_trajectories: true
+  evaluate_on_categories: [1, 2, 3, 4]  # All LoCoMo question categories
+
+# Environment settings
+environment:
+  max_episode_steps: 30
+  early_stopping: true
+  early_stopping_threshold: 0.95  # Stop if QA performance reaches 95%
+
+# Ray initialization settings
+ray_init:
+  include_dashboard: false
+  num_cpus: null  # Use all available CPUs
+  num_gpus: null  # Use all available GPUs

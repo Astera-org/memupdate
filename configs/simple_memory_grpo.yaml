@@ -1,0 +1,45 @@
+hydra:
+  searchpath:
+    - file:///data/users/alan/verl/verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  max_prompt_length: 1024
+  max_response_length: 1024
+  train_batch_size: 16  # Smaller for testing
+  return_raw_chat: True
+
+actor_rollout_ref:
+  hybrid_engine: True
+  rollout:
+    name: sglang
+    multi_turn:
+      enable: True
+      max_assistant_turns: 30  # 30 as specified in design
+
+# Add ray configuration - installed version expects ray_init directly
+ray_init:
+  num_cpus: null
+
+# Also add ray_kwargs for compatibility
+ray_kwargs:
+  ray_init:
+    num_cpus: null
+
+# Trainer configuration with npu_profile
+trainer:
+  npu_profile:
+    options:
+      save_path: ./profiler_data
+      roles: ["all"]
+      level: level1
+      with_memory: false
+      record_shapes: false
+      with_npu: true
+      with_cpu: true
+      with_module: false
+      with_stack: false
+      analysis: true

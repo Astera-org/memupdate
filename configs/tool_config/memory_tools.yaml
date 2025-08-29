@@ -1,0 +1,44 @@
+# THIS IS THE EXACT FORMAT VERL EXPECTS - DO NOT DEVIATE
+tools:
+  - class_name: "memupdate.tools.search_memory.SearchMemoryTool"
+    config:
+      type: "native"  # REQUIRED: Must be "native" for custom tools
+      max_results: 10
+      default_top_k: 5
+      similarity_threshold: 0.3
+    tool_schema:  # Optional but recommended
+      type: "function"
+      function:
+        name: "search_memory"
+        description: "Search and retrieve relevant memories from the memory database"
+        
+  - class_name: "memupdate.tools.manage_memory.ManageMemoryTool"
+    config:
+      type: "native"
+      max_content_length: 1000
+      auto_type_detection: true
+      enable_metadata: true
+      
+  - class_name: "memupdate.tools.delete_memory.DeleteMemoryTool"
+    config:
+      type: "native"
+      require_reason: false
+      enable_recovery: false
+      
+  - class_name: "memupdate.tools.sample_memory.SampleMemoryTool"
+    config:
+      type: "native"
+      max_sample_size: 10
+      default_strategy: "random"
+      
+  - class_name: "memupdate.tools.merge_memory.MergeMemoryTool"
+    config:
+      type: "native"
+      max_merge_count: 5
+      default_strategy: "summarize"
+      
+  - class_name: "memupdate.tools.split_memory.SplitMemoryTool"
+    config:
+      type: "native"
+      max_split_parts: 5
+      default_criteria: "thematic"
