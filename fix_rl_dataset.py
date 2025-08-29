@@ -249,6 +249,42 @@ class RLHFDataset(Dataset):
         
         return row_dict
 
+
+def collate_fn(data_list: list[dict]) -> dict:
+    """
+    Collate a batch of sample dicts into batched tensors and arrays.
+
+    Args:
+        data_list: List of dicts mapping feature names to torch.Tensor or other values.
+
+    Returns:
+        Dict where tensor entries are stacked into a torch.Tensor of shape
+        (batch_size, \*dims) and non-tensor entries are converted to
+        np.ndarray of dtype object with shape (batch_size,).
+    """
+    from collections import defaultdict
+    import numpy as np
+    import torch
+    
+    tensors = defaultdict(list)
+    non_tensors = defaultdict(list)
+
+    for data in data_list:
+        for key, val in data.items():
+            if isinstance(val, torch.Tensor):
+                tensors[key].append(val)
+            else:
+                non_tensors[key].append(val)
+
+    for key, val in tensors.items():
+        tensors[key] = torch.stack(val, dim=0)
+
+    for key, val in non_tensors.items():
+        non_tensors[key] = np.fromiter(val, dtype=object, count=len(val))
+
+    return {**tensors, **non_tensors}
+
+
 # Export the fixed class
 __all__ = ['RLHFDataset', 'collate_fn']
 '''
@@ -278,7 +314,7 @@ def apply_monkey_patch():
     
     # Replace the original with the fixed version
     shutil.copy(fixed_path, original_path)
-    print(f"✅ Replaced original with fixed version")
+    print("✅ Replaced original with fixed version")
     
     return True
 
