@@ -218,6 +218,16 @@ class RLHFDataset(Dataset):
         Note that we also return the raw_input_ids so that it can be combined with other chat template
         """
         row_dict: dict = self.dataframe[item]
+
+        # MEMUPDATE: Handle JSON-serialized extra_info field
+        if "extra_info" in row_dict and isinstance(row_dict["extra_info"], str):
+            import json
+
+            try:
+                row_dict["extra_info"] = json.loads(row_dict["extra_info"])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Failed to deserialize extra_info for item {item}")
+                row_dict["extra_info"] = {}
         messages = self._build_messages(row_dict)
         model_inputs = {}
 
@@ -331,6 +341,20 @@ class RLHFDataset(Dataset):
         need_tools_kwargs = row_dict.get("extra_info", {}).get("need_tools_kwargs", self.need_tools_kwargs)
         if need_tools_kwargs and not tools_kwargs:
             logger.warning("tools_kwargs is empty for index {}, data source: {}", index, row_dict["data_source"])
+
+        # MEMUPDATE: Debug logging for prompt analysis
+        # if index == 0:  # Log first sample for debugging
+        #     print("🔍 MEMUPDATE DEBUG: First sample details")
+        #     print(f"  - prompt type: {type(row_dict.get('prompt', []))}")
+        #     print(f"  - tools_kwargs keys: {list(tools_kwargs.keys()) if tools_kwargs else []}")
+        #     print(f"  - need_tools_kwargs: {need_tools_kwargs}")
+        #     print(f"  - return_raw_chat: {self.return_raw_chat}")
+        #     if self.return_raw_chat:
+        #         raw_prompt = row_dict.get("prompt", messages)
+        #         if raw_prompt and len(raw_prompt) > 0:
+        #             print(f"  - first message role: {raw_prompt[0].get('role', 'N/A')}")
+        #             print(f"  - system content preview: {raw_prompt[0].get('content', '')}...")
+
         row_dict["index"] = index
         row_dict["tools_kwargs"] = tools_kwargs
         row_dict["interaction_kwargs"] = interaction_kwargs

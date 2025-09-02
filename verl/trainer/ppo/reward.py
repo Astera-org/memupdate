@@ -115,6 +115,15 @@ def load_reward_manager(
     # registered via `verl.workers.reward_manager.register`
     # By default reward_manager is set to naive (NaiveRewardManager)
     reward_manager_name = config.reward_model.get("reward_manager", "naive")
+    # MEMUPDATE: Ensure reward manager registration
+    try:
+        import sys
+        sys.path.insert(0, '/workspace/memupdate')
+        import memupdate
+        print(f"✅ MemoryRewardManager registered in process {os.getpid()}")
+    except Exception as e:
+        print(f"⚠️  Failed to import memupdate in process {os.getpid()}: {e}")
+    
     reward_manager_cls = get_reward_manager_cls(reward_manager_name)
 
     # Try to get a custom reward function based on the configuration

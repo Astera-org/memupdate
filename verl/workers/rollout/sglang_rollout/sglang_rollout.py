@@ -302,7 +302,7 @@ class SGLangRollout(BaseRollout):
         self.interaction_map: dict[str, BaseInteraction] = self._initialize_interactions(config)
         # If turn on `free_cache_engine`, SGLang engine's KV cache
         # will be freed after each `generate_sequences` call.
-        logger.info(
+        print(
             f"tool_schemas: {self._tool_schemas}, tool_map: {self._tool_map}, tool_call_parser_type: "
             f"{self._tool_call_parser_type}, sgl_tools: {self._sgl_tools}, function_call_parser: "
             f"{self._function_call_parser}"
@@ -363,7 +363,7 @@ class SGLangRollout(BaseRollout):
         self._tp_rank = self._device_mesh_cpu["tp"].get_local_rank()
         self._tp_size = self._device_mesh_cpu["tp"].size()
         if self._rank == 0:
-            logger.info(f"_init_distributed_env: :tp_world: {self._tp_size}, global_world: {world_size}")
+            print(f"_init_distributed_env: :tp_world: {self._tp_size}, global_world: {world_size}")
         # get tp_rank of this process in this tp group
         visible_devices = [None] * self._device_mesh_cpu.size(1)
 
@@ -530,7 +530,7 @@ class SGLangRollout(BaseRollout):
         tools_config_file = config.multi_turn.tool_config_path
         tool_list = initialize_tools_from_config(tools_config_file)
 
-        logger.info(f"Initialize tools from configuration.: tool_list: {tool_list}")
+        print(f"Initialize tools from configuration.: tool_list: {tool_list}")
         tool_schemas = [tool.get_openai_tool_schema().model_dump() for tool in tool_list]
         tool_map = {tool.name: tool for tool in tool_list}
         tool_call_parser_type = get_tool_call_parser_type(processing_class)
@@ -1113,7 +1113,7 @@ class SGLangRollout(BaseRollout):
                         return result
                     except asyncio.CancelledError:
                         # request is cancelled, return padding
-                        logger.info(f"Request {req.request_id} was cancelled, creating padding")
+                        print(f"Request {req.request_id} was cancelled, creating padding")
                         aborted_requests.append(req.request_id)
                         return self._create_padding_request(req)
 
@@ -1397,9 +1397,7 @@ class SGLangRollout(BaseRollout):
         assert "raw_prompt" in prompts.non_tensor_batch, (
             "need data.return_raw_chat=True, due to no official way do parse_messages"
         )
-        logger.info(
-            "n is deprecated for SGLang rollout since ray ppo trainer will repeat the prompts for rollout.n times"
-        )
+        print("n is deprecated for SGLang rollout since ray ppo trainer will repeat the prompts for rollout.n times")
         req_list = []
         multi_modal_data_list = prompts.non_tensor_batch.get(
             "multi_modal_data", [None] * len(prompts.non_tensor_batch["raw_prompt"])
@@ -1554,6 +1552,9 @@ class SGLangRollout(BaseRollout):
         """Generate sequence with token-in-token-out."""
         request_sampling_params = self.sampling_params.copy()
         request_sampling_params.update(sampling_params)
+        # if self._tp_rank == 0 and os.getpid() % 10 == 0:  # Show from more workers
+        #     prompt_text = self.processing_class.decode(prompt_ids, skip_special_tokens=False)
+        #     print(f"📝 MEMUPDATE DEBUG: Prompt: {prompt_text}...")
         output = await self._handle_engine_generate(prompt_ids, request_sampling_params, image_data=image_data)
         if sampling_params.get("logprobs", False):
             output_token_logprobs = output["meta_info"]["output_token_logprobs"]
@@ -1562,6 +1563,8 @@ class SGLangRollout(BaseRollout):
             )
         else:
             token_ids = output["output_ids"]
+            # # response_text = self.processing_class.decode(token_ids, skip_special_tokens=False)
+            # # print(f"🔄 MEMUPDATE DEBUG: Generated response: {response_text}...")
             log_probs = None
         return TokenOutput(token_ids=token_ids, log_probs=log_probs)
 

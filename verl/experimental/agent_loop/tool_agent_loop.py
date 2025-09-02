@@ -91,6 +91,8 @@ class ToolAgentLoop(AgentLoopBase):
                     **self.apply_chat_template_kwargs,
                 ),
             )
+            # decode_prompt = self.tokenizer.decode(prompt_ids, skip_special_tokens=False)
+            # print(f"🔧 MEMUPDATE DEBUG: Generated prompt: {decode_prompt}")
         response_mask, response_logprobs = [], []
         tools_kwargs = kwargs.get("tools_kwargs", {})
 
