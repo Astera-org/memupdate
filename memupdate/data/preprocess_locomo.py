@@ -14,16 +14,18 @@ logger = logging.getLogger(__name__)
 class LoCoMoProcessor:
     """Processes LoCoMo dataset for MemUpdate training."""
 
-    def __init__(self, locomo_data_path: str = "/data/users/alan/locomo/data/locomo10.json"):
+    def __init__(self, locomo_data_path: str = "/workspace/locomo/data/locomo10.json"):
         self.locomo_data_path = Path(locomo_data_path)
         self.data = None
-        
+
     def load_data(self):
         """Load LoCoMo dataset from JSON file."""
         try:
-            with open(self.locomo_data_path, 'r') as f:
+            with open(self.locomo_data_path, "r") as f:
                 self.data = json.load(f)
-            logger.info(f"Loaded {len(self.data)} conversations from {self.locomo_data_path}")
+            logger.info(
+                f"Loaded {len(self.data)} conversations from {self.locomo_data_path}"
+            )
         except FileNotFoundError:
             logger.error(f"LoCoMo data file not found: {self.locomo_data_path}")
             raise
@@ -35,30 +37,36 @@ class LoCoMoProcessor:
         """Create train/test split from conversations."""
         if not self.data:
             self.load_data()
-            
+
         random.seed(seed)
         conversations = list(range(len(self.data)))
         random.shuffle(conversations)
-        
+
         train_indices = conversations[:train_conversations]
         test_indices = conversations[train_conversations:]
-        
+
         train_data = [self.data[i] for i in train_indices]
         test_data = [self.data[i] for i in test_indices]
-        
-        logger.info(f"Split data: {len(train_data)} train conversations, {len(test_data)} test conversations")
+
+        logger.info(
+            f"Split data: {len(train_data)} train conversations, {len(test_data)} test conversations"
+        )
         return train_data, test_data
 
     def extract_qa_pairs(self, conversations: List[Dict]) -> List[Dict]:
         """Extract QA pairs from conversations for training trials."""
         qa_trials = []
-        
+
         for conv in conversations:
             sample_id = conv.get("sample_id", "unknown")
             qa_pairs = conv.get("qa", [])
-            conversation_data = conv.get("conversation", {})  # LoCoMo uses "conversation", not "conversations"
-            facts = conv.get("observation", {})  # LoCoMo uses "observation", not "facts"
-            
+            conversation_data = conv.get(
+                "conversation", {}
+            )  # LoCoMo uses "conversation", not "conversations"
+            facts = conv.get(
+                "observation", {}
+            )  # LoCoMo uses "observation", not "facts"
+
             for qa in qa_pairs:
                 trial = {
                     "sample_id": sample_id,
@@ -67,17 +75,17 @@ class LoCoMoProcessor:
                     "evidence": qa.get("evidence", []),
                     "category": qa.get("category", 0),
                     "conversations": conversation_data,
-                    "facts": facts  # This will be the observation data
+                    "facts": facts,  # This will be the observation data
                 }
                 qa_trials.append(trial)
-                
+
         logger.info(f"Extracted {len(qa_trials)} QA trials")
         return qa_trials
 
     def convert_facts_to_memories(self, observations: Dict) -> List[Dict]:
         """Convert conversation observations to initial memory entries."""
         memories = []
-        
+
         # LoCoMo observations are nested under session keys
         for session_key, session_obs in observations.items():
             if isinstance(session_obs, dict):
@@ -85,130 +93,103 @@ class LoCoMoProcessor:
                     for fact_entry in speaker_facts:
                         if isinstance(fact_entry, list) and len(fact_entry) >= 2:
                             fact_text, evidence = fact_entry[0], fact_entry[1]
-                            
+
                             memory = {
                                 "content": fact_text,
                                 "speaker": speaker,
                                 "evidence": evidence,
                                 "session": session_key,
                                 "memory_type": "episodic",  # Default type
-                                "source": "conversation_observations"
+                                "source": "conversation_observations",
                             }
                             memories.append(memory)
-                    
+
         return memories
 
     def create_verl_training_data(self, qa_trials: List[Dict]) -> List[Dict]:
         """Convert QA trials to verl training format with full context in messages."""
         training_data = []
-        
+
         for idx, trial in enumerate(qa_trials):
             # Extract initial memories from conversation facts
             initial_memories = self.convert_facts_to_memories(trial["facts"])
-            
+
             # Don't hardcode memory in prompt - let LLM discover via tool calls!
-            
-            # Create comprehensive system prompt with all context
-            system_content = """You are a memory management agent with access to memory tools. Your task is to analyze the current memory database and use the available tools to optimize it for better question answering.
 
-Available tools:
-- search_memory: Search and retrieve relevant memories
-- manage_memory: Create or update memory entries
-- delete_memory: Remove outdated or irrelevant memories  
-- sample_memory: Sample diverse memories for analysis
-- merge_memory: Consolidate related memories
-- split_memory: Break down complex memories
+            # Create system prompt (tools will be auto-injected by tokenizer)
+            system_content = """You are a memory management agent. Your task is to optimize a memory database to better answer future questions.
 
-Use these tools strategically to improve the memory database for the target question. 
+IMPORTANT WORKFLOW:
+1. First, call search_memory() to discover the current memory state
+2. Analyze what information is needed to answer the target question
+3. Update the memory database using the available tools (manage_memory, delete_memory, merge_memory, etc.)
+4. Continue refining until the memory database can effectively answer the target question
 
-IMPORTANT: Call functions using this EXACT JSON format:
-{
-  "tool_calls": [
-    {
-      "type": "function",
-      "function": {
-        "name": "search_memory",
-        "arguments": {"query": "your search query here", "limit": 5}
-      }
-    }
-  ]
-}
+Focus on accuracy and relevance. Remove outdated information and add missing details that would help answer the question."""
 
-For manage_memory:
-{
-  "tool_calls": [
-    {
-      "type": "function", 
-      "function": {
-        "name": "manage_memory",
-        "arguments": {"operation": "create", "content": "memory content", "memory_type": "episodic"}
-      }
-    }
-  ]
-}
+            # Create user prompt
+            user_content = f"""Target question to optimize for: {trial["question"]}
 
-For delete_memory:
-{
-  "tool_calls": [
-    {
-      "type": "function",
-      "function": {
-        "name": "delete_memory", 
-        "arguments": {"memory_ids": ["id1", "id2"]}
-      }
-    }
-  ]
-}
-
-Always use this exact structure for tool calls."""
-
-            # Create user prompt - LLM must use tools to discover memory state
-            user_content = f"""Target question to optimize for: {trial['question']}
-
-Please analyze and update the memory database to ensure this question can be answered correctly. 
-
-IMPORTANT: Start by calling search_memory() to see what information is currently stored in the memory database, then use the other tools as needed to optimize it for answering the target question."""
+Analyze and update the memory database to ensure this question can be answered correctly."""
 
             # IMPORTANT: verl expects these exact keys in this format
             record = {
-                # OpenAI chat format messages - agent sees EVERYTHING here
-                "messages": [
+                # verl expects 'prompt' field with list of messages (not JSON string!)
+                "prompt": [
                     {"role": "system", "content": system_content},
-                    {"role": "user", "content": user_content}
+                    {"role": "user", "content": user_content},
                 ],
-                "prompt": f"Target question: {trial['question']}",  # Fallback prompt field
                 "data_source": f"locomo-{trial['sample_id']}",
+                "agent_name": "tool_agent",  # CRITICAL: This enables tool agent loop instead of single_turn_agent
                 "extra_info": {
                     "index": idx,
                     "need_tools_kwargs": True,  # CRITICAL: This enables tool usage
                     "tools_kwargs": {
                         # Each tool needs namespace for conversation isolation and initial memory loading
                         "search_memory": {
-                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
-                            "execute_kwargs": {"namespace": trial['sample_id']},
-                            "calc_reward_kwargs": {"namespace": trial['sample_id']}
+                            "create_kwargs": {
+                                "initial_memories": initial_memories,
+                                "namespace": trial["sample_id"],
+                            },
+                            "execute_kwargs": {"namespace": trial["sample_id"]},
+                            "calc_reward_kwargs": {"namespace": trial["sample_id"]},
                         },
                         "manage_memory": {
-                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
-                            "execute_kwargs": {"namespace": trial['sample_id']},
-                            "calc_reward_kwargs": {"namespace": trial['sample_id']}
+                            "create_kwargs": {
+                                "initial_memories": initial_memories,
+                                "namespace": trial["sample_id"],
+                            },
+                            "execute_kwargs": {"namespace": trial["sample_id"]},
+                            "calc_reward_kwargs": {"namespace": trial["sample_id"]},
                         },
                         "delete_memory": {
-                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
-                            "execute_kwargs": {"namespace": trial['sample_id']}
+                            "create_kwargs": {
+                                "initial_memories": initial_memories,
+                                "namespace": trial["sample_id"],
+                            },
+                            "execute_kwargs": {"namespace": trial["sample_id"]},
                         },
                         "sample_memory": {
-                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
-                            "execute_kwargs": {"namespace": trial['sample_id']}
+                            "create_kwargs": {
+                                "initial_memories": initial_memories,
+                                "namespace": trial["sample_id"],
+                            },
+                            "execute_kwargs": {"namespace": trial["sample_id"]},
                         },
                         "merge_memory": {
-                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
-                            "execute_kwargs": {"namespace": trial['sample_id']}
+                            "create_kwargs": {
+                                "initial_memories": initial_memories,
+                                "namespace": trial["sample_id"],
+                            },
+                            "execute_kwargs": {"namespace": trial["sample_id"]},
                         },
                         "split_memory": {
-                            "create_kwargs": {"initial_memories": initial_memories, "namespace": trial['sample_id']},
-                            "execute_kwargs": {"namespace": trial['sample_id']}
-                        }
+                            "create_kwargs": {
+                                "initial_memories": initial_memories,
+                                "namespace": trial["sample_id"],
+                            },
+                            "execute_kwargs": {"namespace": trial["sample_id"]},
+                        },
                     },
                     # Data for reward computation
                     "target_question": trial["question"],
@@ -216,25 +197,27 @@ IMPORTANT: Start by calling search_memory() to see what information is currently
                     "conversation_id": trial["sample_id"],
                     "initial_memories": initial_memories,
                     "evidence": trial.get("evidence", []),
-                    "category": trial.get("category", 0)
-                }
+                    "category": trial.get("category", 0),
+                },
             }
             training_data.append(record)
-        
+
         return training_data
 
-    def _create_training_prompt(self, memories: List[Dict], target_question: str, conversation_context: Dict) -> str:
+    def _create_training_prompt(
+        self, memories: List[Dict], target_question: str, conversation_context: Dict
+    ) -> str:
         """Create training prompt for memory update agent."""
-        
+
         # Format initial memories
         memory_text = "Initial Memory Database:\\n"
         for i, mem in enumerate(memories, 1):
             memory_text += f"{i}. [{mem['memory_type']}] {mem['content']} (from {mem['speaker']})\\n"
-        
+
         # Create context about conversation
         context_text = f"\\nConversation Context:\\n"
-        context_text += f"Number of sessions: {len([k for k in conversation_context.keys() if k.startswith('session')])//2}\\n"
-        
+        context_text += f"Number of sessions: {len([k for k in conversation_context.keys() if k.startswith('session')]) // 2}\\n"
+
         prompt = f"""You are a memory management agent tasked with optimizing a memory database to better answer questions.
 
 {memory_text}
@@ -253,7 +236,7 @@ Consider:
 5. Would sampling help identify patterns for better organization?
 
 Begin optimizing the memory database now."""
-        
+
         return prompt
 
     def save_parquet(self, data: List[Dict], output_path: str):
@@ -265,49 +248,62 @@ Begin optimizing the memory database now."""
     def save_parquet_files(self, output_dir: str = "data/locomo"):
         """Save training data as parquet files."""
         import os
+
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Load and split data
         train_conversations, test_conversations = self.create_train_test_split()
-        
+
         # Extract QA pairs
         train_trials = self.extract_qa_pairs(train_conversations)
         test_trials = self.extract_qa_pairs(test_conversations)
-        
+
         # Convert to verl format
         train_data = self.create_verl_training_data(train_trials)
         test_data = self.create_verl_training_data(test_trials)
-        
-        # Save as parquet - convert complex objects to JSON strings for parquet compatibility
-        import json
-        
-        def serialize_complex_fields(df):
-            """Convert complex Python objects to JSON strings for parquet storage."""
-            df_copy = df.copy()
-            if 'extra_info' in df_copy.columns:
-                df_copy['extra_info'] = df_copy['extra_info'].apply(json.dumps)
-            if 'messages' in df_copy.columns:
-                df_copy['messages'] = df_copy['messages'].apply(json.dumps)
-            return df_copy
-        
-        train_df = serialize_complex_fields(pd.DataFrame(train_data))
-        test_df = serialize_complex_fields(pd.DataFrame(test_data))
-        
-        train_df.to_parquet(f"{output_dir}/train_corrected.parquet", index=False)
-        test_df.to_parquet(f"{output_dir}/test_corrected.parquet", index=False)
-        
-        print(f"✅ Saved {len(train_data)} training samples to {output_dir}/train.parquet")
-        print(f"✅ Saved {len(test_data)} test samples to {output_dir}/test.parquet")
-        return train_df, test_df
 
-    def process_full_pipeline(self, output_dir: str = "/data/users/alan/memupdate/data/locomo"):
+        # Save as parquet - need to serialize complex nested structures
+        # Even though verl expects native objects, parquet can't handle deeply nested dicts
+        # So we serialize to JSON and will need to handle deserialization in verl
+        import json
+
+        def serialize_for_parquet(data):
+            """Serialize only the problematic nested fields."""
+            result = []
+            for record in data:
+                record_copy = record.copy()
+                # Only serialize extra_info which has deep nesting
+                if "extra_info" in record_copy:
+                    record_copy["extra_info"] = json.dumps(record_copy["extra_info"])
+                # Keep prompt and messages as native lists - verl can handle these
+                result.append(record_copy)
+            return result
+
+        train_data_serialized = serialize_for_parquet(train_data)
+        test_data_serialized = serialize_for_parquet(test_data)
+
+        # Use pandas for saving
+        train_df = pd.DataFrame(train_data_serialized)
+        test_df = pd.DataFrame(test_data_serialized)
+
+        train_df.to_parquet(f"{output_dir}/train.parquet", index=False)
+        test_df.to_parquet(f"{output_dir}/test.parquet", index=False)
+
+        print(
+            f"✅ Saved {len(train_data)} training samples to {output_dir}/train.parquet"
+        )
+        print(f"✅ Saved {len(test_data)} test samples to {output_dir}/test.parquet")
+
+    def process_full_pipeline(
+        self, output_dir: str = "/data/users/alan/memupdate/data/locomo"
+    ):
         """Run the complete preprocessing pipeline."""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        
+
         # Use the new save_parquet_files method
         train_df, test_df = self.save_parquet_files(str(output_path))
-        
+
         # Save summary stats
         stats = {
             "total_conversations": 10,  # LoCoMo has 10 conversations
@@ -316,12 +312,12 @@ Begin optimizing the memory database now."""
             "train_qa_pairs": len(train_df),
             "test_qa_pairs": len(test_df),
             "total_training_examples": len(train_df),
-            "total_test_examples": len(test_df)
+            "total_test_examples": len(test_df),
         }
-        
-        with open(output_path / "dataset_stats.json", 'w') as f:
+
+        with open(output_path / "dataset_stats.json", "w") as f:
             json.dump(stats, f, indent=2)
-            
+
         logger.info(f"Preprocessing complete. Stats: {stats}")
         return stats
 
@@ -329,11 +325,12 @@ Begin optimizing the memory database now."""
 def main():
     """Run preprocessing from command line."""
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/locomo", help="Output directory")
     parser.add_argument("--input", default="/data/users/alan/locomo/data/locomo10.json")
     args = parser.parse_args()
-    
+
     processor = LoCoMoProcessor(args.input)
     processor.save_parquet_files(args.output)
 
