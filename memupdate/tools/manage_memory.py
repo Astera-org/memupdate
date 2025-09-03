@@ -199,6 +199,17 @@ class ManageMemoryTool(BaseTool):
             # Get shared store for this namespace
             store = self.store_manager.get_or_create_store(namespace)
 
+            # Debug: Check initial store state
+            try:
+                memories_before = await store.asearch(
+                    ("memories",),
+                    query="",
+                    limit=1000
+                )
+                print(f"🛠️  DEBUG: Store initially contains {len(memories_before)} memories before {operation} operation")
+            except Exception as e:
+                print(f"🛠️  DEBUG: Error checking initial store contents: {e}")
+
             # 🔧 CRITICAL FIX: Create LangMem manage tool with shared store per namespace
             if create_manage_memory_tool is not None and InMemoryStore is not None:
                 try:
@@ -209,13 +220,27 @@ class ManageMemoryTool(BaseTool):
                     )
                     if operation == "create":
                         # Create new memory
+                        print(f"🛠️  DEBUG: About to create memory with content: '{content[:100]}...'")
+                        print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
+                        
                         result = await langmem_manage.ainvoke({
                             "action": "create",
                             "content": content,
                             "metadata": {**metadata, "type": memory_type, "source": source}
                         })
                         
-                        # Memory updated in LangMem store
+                        print(f"🛠️  DEBUG: LangMem create result: {result}")
+                        
+                        # Check store contents after operation
+                        try:
+                            memories_after = await store.asearch(
+                                ("memories",),
+                                query="",
+                                limit=1000
+                            )
+                            print(f"🛠️  DEBUG: Store now contains {len(memories_after)} memories after create operation")
+                        except Exception as e:
+                            print(f"🛠️  DEBUG: Error checking store contents: {e}")
                         
                         return ToolResponse(
                             text=f"Successfully created {memory_type} memory: {content[:100]}..."
@@ -238,6 +263,8 @@ class ManageMemoryTool(BaseTool):
                             print(f"🔧 Converted memory_id '{memory_id}' to UUID '{langmem_id}'")
                         
                         # Update existing memory
+                        print(f"🛠️  DEBUG: About to update memory {memory_id} (UUID: {langmem_id}) with content: '{content[:100]}...'")
+                        
                         result = await langmem_manage.ainvoke({
                             "action": "update", 
                             "id": langmem_id,  # Use UUID-format ID
@@ -245,7 +272,18 @@ class ManageMemoryTool(BaseTool):
                             "metadata": {**metadata, "type": memory_type, "source": source}
                         })
                         
-                        # Memory updated in LangMem store
+                        print(f"🛠️  DEBUG: LangMem update result: {result}")
+                        
+                        # Check store contents after operation
+                        try:
+                            memories_after = await store.asearch(
+                                ("memories",),
+                                query="",
+                                limit=1000
+                            )
+                            print(f"🛠️  DEBUG: Store now contains {len(memories_after)} memories after update operation")
+                        except Exception as e:
+                            print(f"🛠️  DEBUG: Error checking store contents: {e}")
                         
                         return ToolResponse(
                             text=f"Successfully updated memory {memory_id}: {content[:100]}..."
@@ -253,13 +291,27 @@ class ManageMemoryTool(BaseTool):
                     
                     elif operation == "analyze":
                         # Analyze and potentially create memory
+                        print(f"🛠️  DEBUG: About to analyze/create memory with content: '{content[:100]}...'")
+                        print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
+                        
                         result = await langmem_manage.ainvoke({
                             "action": "create",
                             "content": content,
                             "metadata": {**metadata, "type": memory_type, "source": source}
                         })
                         
-                        # Memory updated in LangMem store
+                        print(f"🛠️  DEBUG: LangMem analyze result: {result}")
+                        
+                        # Check store contents after operation
+                        try:
+                            memories_after = await store.asearch(
+                                ("memories",),
+                                query="",
+                                limit=1000
+                            )
+                            print(f"🛠️  DEBUG: Store now contains {len(memories_after)} memories after analyze operation")
+                        except Exception as e:
+                            print(f"🛠️  DEBUG: Error checking store contents: {e}")
                         
                         return ToolResponse(
                             text=f"Analyzed and processed content: {content[:100]}..."

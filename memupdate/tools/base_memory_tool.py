@@ -73,7 +73,7 @@ class MemoryBrokerActor:
             )
         
         self._memory_cache[namespace] = initial_memories.copy()
-        print(f"🚀 Initialized conversation memory for {namespace} with {len(initial_memories)} memories")
+        # print(f"🚀 Initialized conversation memory for {namespace} with {len(initial_memories)} memories")
         return namespace
     
     async def get_final_memories_for_reward(self, namespace: str) -> List[Dict]:
@@ -104,7 +104,7 @@ class MemoryBrokerActor:
                     "updated_at": mem.updated_at.isoformat() if mem.updated_at else None,
                 })
             
-            print(f"🎯 Retrieved {len(result)} final memories for reward computation from {namespace}")
+            # print(f"🎯 Retrieved {len(result)} final memories for reward computation from {namespace}")
             return result
             
         except Exception as e:
