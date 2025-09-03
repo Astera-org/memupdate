@@ -222,7 +222,7 @@ class SearchMemoryTool(BaseTool):
                                 text=f"No memories found matching '{query}'. Total memories available: {total_count}"
                             ), 0.1, {"memories_found": 0, "total_memories": total_count}
                     else:
-                        return ToolResponse(text=f"Failed to search memories: {result.get('error', 'Unknown error')}", 0.0, {})
+                        return ToolResponse(text=f"Failed to search memories: {result.get('error', 'Unknown error')}"), 0.0, {}
                     
                 except Exception as e:
                     logger.error(f"LangMem search failed: {e}")
