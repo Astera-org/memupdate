@@ -56,6 +56,7 @@ class LoCoMoProcessor:
     def extract_qa_pairs(self, conversations: List[Dict]) -> List[Dict]:
         """Extract QA pairs from conversations for training trials."""
         qa_trials = []
+        import uuid
 
         for conv in conversations:
             sample_id = conv.get("sample_id", "unknown")
@@ -67,9 +68,14 @@ class LoCoMoProcessor:
                 "observation", {}
             )  # LoCoMo uses "observation", not "facts"
 
-            for qa in qa_pairs:
+            for qa_idx, qa in enumerate(qa_pairs):
+                # 🔧 CRITICAL FIX: Create unique trajectory ID for each QA pair
+                # Each QA pair gets its own namespace to prevent memory bank sharing
+                trajectory_id = f"{sample_id}-qa{qa_idx}-{str(uuid.uuid4())[:8]}"
+                
                 trial = {
-                    "sample_id": sample_id,
+                    "sample_id": sample_id,  # Original conversation ID
+                    "trajectory_id": trajectory_id,  # Unique trajectory ID
                     "question": qa.get("question", ""),
                     "answer": qa.get("answer", ""),
                     "evidence": qa.get("evidence", []),
@@ -79,7 +85,7 @@ class LoCoMoProcessor:
                 }
                 qa_trials.append(trial)
 
-        logger.info(f"Extracted {len(qa_trials)} QA trials")
+        logger.info(f"Extracted {len(qa_trials)} QA trials with unique trajectory IDs")
         return qa_trials
 
     def convert_facts_to_memories(self, observations: Dict) -> List[Dict]:
@@ -119,13 +125,11 @@ class LoCoMoProcessor:
             # Create system prompt (tools will be auto-injected by tokenizer)
             system_content = """You are a memory management agent. Your task is to optimize a memory database to better answer future questions.
 
-IMPORTANT WORKFLOW:
-1. First, call search_memory() to discover the current memory state
-2. Analyze what information is needed to answer the target question
-3. Update the memory database using the available tools (manage_memory, delete_memory, merge_memory, etc.)
-4. Continue refining until the memory database can effectively answer the target question
-
-Focus on accuracy and relevance. Remove outdated information and add missing details that would help answer the question."""
+IMPORTANT: Because we're in debug mode still, you need to help me call these tools to see what the memory database looks like.
+1. search_memory() to discover the current memory state
+2. manage_memory() to update the memory database
+3. manage_memory() to create a memory
+"""
 
             # Create user prompt
             user_content = f"""Target question to optimize for: {trial["question"]}
@@ -145,59 +149,62 @@ Analyze and update the memory database to ensure this question can be answered c
                     "index": idx,
                     "need_tools_kwargs": True,  # CRITICAL: This enables tool usage
                     "tools_kwargs": {
-                        # Each tool needs namespace for conversation isolation and initial memory loading
+                        # 🔧 CRITICAL FIX: Use unique trajectory_id for namespace isolation
+                        # Each QA pair gets its own memory bank to prevent cross-contamination
                         "search_memory": {
                             "create_kwargs": {
                                 "initial_memories": initial_memories,
-                                "namespace": trial["sample_id"],
+                                "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["sample_id"]},
-                            "calc_reward_kwargs": {"namespace": trial["sample_id"]},
+                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
+                            "calc_reward_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "manage_memory": {
                             "create_kwargs": {
                                 "initial_memories": initial_memories,
-                                "namespace": trial["sample_id"],
+                                "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["sample_id"]},
-                            "calc_reward_kwargs": {"namespace": trial["sample_id"]},
+                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
+                            "calc_reward_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "delete_memory": {
                             "create_kwargs": {
                                 "initial_memories": initial_memories,
-                                "namespace": trial["sample_id"],
+                                "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["sample_id"]},
+                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "sample_memory": {
                             "create_kwargs": {
                                 "initial_memories": initial_memories,
-                                "namespace": trial["sample_id"],
+                                "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["sample_id"]},
+                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "merge_memory": {
                             "create_kwargs": {
                                 "initial_memories": initial_memories,
-                                "namespace": trial["sample_id"],
+                                "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["sample_id"]},
+                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "split_memory": {
                             "create_kwargs": {
                                 "initial_memories": initial_memories,
-                                "namespace": trial["sample_id"],
+                                "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["sample_id"]},
+                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                     },
                     # Data for reward computation
                     "target_question": trial["question"],
                     "target_answer": trial["answer"],
-                    "conversation_id": trial["sample_id"],
+                    "conversation_id": trial["trajectory_id"],  # Use unique trajectory ID for reward isolation
                     "initial_memories": initial_memories,
                     "evidence": trial.get("evidence", []),
                     "category": trial.get("category", 0),
+                    # Keep original sample_id for reference
+                    "original_sample_id": trial["sample_id"],
                 },
             }
             training_data.append(record)
