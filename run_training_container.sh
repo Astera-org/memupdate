@@ -7,6 +7,10 @@ set -e
 
 export WANDB_API_KEY=5fb2c3eb35cb3bc0124a02069ce91eedc6570e5a
 
+# Prevent HuggingFace from trying to connect online
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
 # Container paths
 PROJECT_DIR="/workspace/verl"
 MEMUPDATE_DIR="/workspace/memupdate"
@@ -45,7 +49,7 @@ python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-3B-Instruct \
+    actor_rollout_ref.model.path=/root/.cache/huggingface/hub/models--Qwen--Qwen2.5-3B-Instruct/snapshots/aa8e72537993ba99e69dfaafa59ed015b17504d1 \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=16 \
@@ -76,7 +80,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_training_steps=5 \
+    trainer.total_training_steps=1 \
     actor_rollout_ref.rollout.multi_turn.enable=True \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=30 \
     actor_rollout_ref.rollout.multi_turn.use_inference_chat_template=True \
