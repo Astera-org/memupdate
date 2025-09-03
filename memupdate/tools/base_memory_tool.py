@@ -41,10 +41,114 @@ class MemoryBrokerActor:
         if namespace not in self._stores:
             self._stores[namespace] = InMemoryStore()
             print(f"✅ Created new InMemoryStore for namespace: {namespace}")
+        else:
+            print(f"🔄 Using existing InMemoryStore for namespace: {namespace}")
         return self._stores[namespace]
+    
+    async def create_memory_in_store(self, namespace: str, memory_data: dict) -> dict:
+        """Create memory directly in Ray Actor store (avoids serialization issues)."""
+        if namespace not in self._stores:
+            self._stores[namespace] = InMemoryStore()
+            print(f"✅ Created new InMemoryStore for namespace: {namespace}")
+        
+        store = self._stores[namespace]
+        
+        # Use LangMem's create_manage_memory_tool to add the memory
+        try:
+            from langmem import create_manage_memory_tool
+            langmem_manage = create_manage_memory_tool(
+                namespace=("memories",),
+                store=store
+            )
+            
+            result = await langmem_manage.ainvoke(memory_data)
+            
+            # Return updated count and result
+            memories = await store.asearch(("memories",), query="", limit=1000)
+            return {
+                "result": result,
+                "new_count": len(memories),
+                "success": True
+            }
+            
+        except Exception as e:
+            print(f"❌ Error creating memory in Ray Actor store: {e}")
+            return {
+                "result": str(e),
+                "new_count": 0,
+                "success": False
+            }
+    
+    async def update_memory_in_store(self, namespace: str, memory_data: dict) -> dict:
+        """Update memory directly in Ray Actor store."""
+        if namespace not in self._stores:
+            return {"result": "Namespace not found", "success": False}
+        
+        store = self._stores[namespace]
+        
+        try:
+            from langmem import create_manage_memory_tool
+            langmem_manage = create_manage_memory_tool(
+                namespace=("memories",),
+                store=store
+            )
+            
+            result = await langmem_manage.ainvoke(memory_data)
+            
+            memories = await store.asearch(("memories",), query="", limit=1000)
+            return {
+                "result": result,
+                "new_count": len(memories),
+                "success": True
+            }
+            
+        except Exception as e:
+            print(f"❌ Error updating memory in Ray Actor store: {e}")
+            return {
+                "result": str(e),
+                "success": False
+            }
+    
+    async def search_memory_in_store(self, namespace: str, query: str, limit: int = 10) -> dict:
+        """Search memory directly in Ray Actor store."""
+        if namespace not in self._stores:
+            return {"results": [], "success": False}
+        
+        store = self._stores[namespace]
+        
+        try:
+            memories = await store.asearch(("memories",), query=query, limit=limit)
+            results = []
+            for mem in memories:
+                results.append({
+                    "id": mem.key,
+                    "content": mem.value.get("content", ""),
+                    "metadata": mem.value.get("metadata", {}),
+                })
+            
+            return {
+                "results": results,
+                "total_count": len(await store.asearch(("memories",), query="", limit=1000)),
+                "success": True
+            }
+            
+        except Exception as e:
+            print(f"❌ Error searching memory in Ray Actor store: {e}")
+            return {
+                "results": [],
+                "success": False
+            }
     
     async def init_conversation_memory(self, namespace: str, initial_memories: List[Dict]) -> str:
         """Initialize memory for a conversation (called per batch item)."""
+        # 🔧 CRITICAL FIX: Don't reinitialize if store already exists (prevents overwriting tool changes)
+        if namespace in self._stores:
+            existing_count = len(await self.get_final_memories_for_reward(namespace))
+            initial_count = len(initial_memories)
+            print(f"🔄 Store already exists for namespace {namespace} with {existing_count} memories (vs {initial_count} initial), skipping reinitialization to preserve tool changes")
+            return namespace
+            
+        print(f"🆕 Creating NEW store for namespace {namespace} with {len(initial_memories)} initial memories")
         store = InMemoryStore()
         self._stores[namespace] = store
         self._initial_memories[namespace] = initial_memories.copy()
@@ -73,7 +177,7 @@ class MemoryBrokerActor:
             )
         
         self._memory_cache[namespace] = initial_memories.copy()
-        # print(f"🚀 Initialized conversation memory for {namespace} with {len(initial_memories)} memories")
+        print(f"✅ Successfully initialized NEW conversation memory for {namespace} with {len(initial_memories)} memories")
         return namespace
     
     async def get_final_memories_for_reward(self, namespace: str) -> List[Dict]:
@@ -85,12 +189,15 @@ class MemoryBrokerActor:
         store = self._stores[namespace]
         
         try:
+            print(f"🔍 DEBUG: About to query store for namespace {namespace} - store type: {type(store)}")
             # Query all memories from the actual LangMem store
             memories = await store.asearch(
                 ("memories",),  # namespace_prefix as positional argument
                 query="",  # Empty query returns all memories
                 limit=1000  # High limit to get all memories
             )
+            
+            print(f"🔍 DEBUG: Store query successful - returned {len(memories)} memories")
             
             # Convert to reward manager format
             result = []
@@ -104,11 +211,12 @@ class MemoryBrokerActor:
                     "updated_at": mem.updated_at.isoformat() if mem.updated_at else None,
                 })
             
-            # print(f"🎯 Retrieved {len(result)} final memories for reward computation from {namespace}")
+            print(f"🎯 Retrieved {len(result)} final memories for reward computation from {namespace}")
             return result
             
         except Exception as e:
-            print(f"⚠️  Error querying memories for {namespace}: {e}")
+            print(f"❌ CRITICAL: Error querying memories for {namespace}: {type(e).__name__}: {e}")
+            print(f"❌ FALLBACK: Using initial memories ({len(self._initial_memories.get(namespace, []))}) instead of actual store contents")
             # Fallback to initial memories
             return self._initial_memories.get(namespace, [])
     
@@ -186,6 +294,24 @@ class MemoryStoreManager:
         """Get current memory state for reward computation (called on reward workers)."""
         broker = cls.get_broker_actor()
         return ray.get(broker.get_final_memories_for_reward.remote(namespace))
+    
+    @classmethod
+    def create_memory_via_actor(cls, namespace: str, memory_data: dict) -> dict:
+        """Create memory directly in Ray Actor store (fixes serialization issue)."""
+        broker = cls.get_broker_actor()
+        return ray.get(broker.create_memory_in_store.remote(namespace, memory_data))
+    
+    @classmethod
+    def update_memory_via_actor(cls, namespace: str, memory_data: dict) -> dict:
+        """Update memory directly in Ray Actor store (fixes serialization issue)."""
+        broker = cls.get_broker_actor()
+        return ray.get(broker.update_memory_in_store.remote(namespace, memory_data))
+    
+    @classmethod
+    def search_memory_via_actor(cls, namespace: str, query: str, limit: int = 10) -> dict:
+        """Search memory directly in Ray Actor store (fixes serialization issue)."""
+        broker = cls.get_broker_actor()
+        return ray.get(broker.search_memory_in_store.remote(namespace, query, limit))
 
 
     @classmethod

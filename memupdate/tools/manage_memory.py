@@ -196,134 +196,81 @@ class ManageMemoryTool(BaseTool):
             if not content:
                 return ToolResponse(text="Error: Content is required for memory management"), 0.0, {}
 
-            # Get shared store for this namespace
-            store = self.store_manager.get_or_create_store(namespace)
-
-            # Debug: Check initial store state
-            try:
-                memories_before = await store.asearch(
-                    ("memories",),
-                    query="",
-                    limit=1000
-                )
-                print(f"🛠️  DEBUG: Store initially contains {len(memories_before)} memories before {operation} operation")
-            except Exception as e:
-                print(f"🛠️  DEBUG: Error checking initial store contents: {e}")
-
-            # 🔧 CRITICAL FIX: Create LangMem manage tool with shared store per namespace
-            if create_manage_memory_tool is not None and InMemoryStore is not None:
+            # 🔧 CRITICAL FIX: Use Ray Actor for all store operations to avoid serialization issues
+            # Getting local store copies via ray.get() creates separate instances!
+            
+            if operation == "create":
+                print(f"🛠️  DEBUG: About to create memory with content: '{content[:100]}...'")
+                print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
+                
+                # Use Ray Actor method directly
+                result = self.store_manager.create_memory_via_actor(namespace, {
+                    "action": "create",
+                    "content": content,
+                    "metadata": {**metadata, "type": memory_type, "source": source}
+                })
+                
+                if result["success"]:
+                    print(f"🛠️  DEBUG: Ray Actor create result: {result['result']}")
+                    print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after create operation in namespace '{namespace}'")
+                    return ToolResponse(
+                        text=f"Successfully created {memory_type} memory: {content[:100]}..."
+                    ), 0.1, {"operation": operation, "memory_type": memory_type}
+                else:
+                    return ToolResponse(text=f"Failed to create memory: {result['result']}"), 0.0, {}
+                    
+            elif operation == "update":
+                if not memory_id:
+                    return ToolResponse(text="Error: memory_id required for update operation"), 0.0, {}
+                    
+                # Convert human-readable ID to UUID if needed
+                import uuid
                 try:
-                    # Create LangMem manage tool with the shared store for this namespace
-                    langmem_manage = create_manage_memory_tool(
-                        namespace=("memories",),
-                        store=store  # Use the shared store for this namespace
-                    )
-                    if operation == "create":
-                        # Create new memory
-                        print(f"🛠️  DEBUG: About to create memory with content: '{content[:100]}...'")
-                        print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
-                        
-                        result = await langmem_manage.ainvoke({
-                            "action": "create",
-                            "content": content,
-                            "metadata": {**metadata, "type": memory_type, "source": source}
-                        })
-                        
-                        print(f"🛠️  DEBUG: LangMem create result: {result}")
-                        
-                        # Check store contents after operation
-                        try:
-                            memories_after = await store.asearch(
-                                ("memories",),
-                                query="",
-                                limit=1000
-                            )
-                            print(f"🛠️  DEBUG: Store now contains {len(memories_after)} memories after create operation")
-                        except Exception as e:
-                            print(f"🛠️  DEBUG: Error checking store contents: {e}")
-                        
-                        return ToolResponse(
-                            text=f"Successfully created {memory_type} memory: {content[:100]}..."
-                        ), 0.1, {"operation": operation, "memory_type": memory_type}
+                    uuid.UUID(memory_id)
+                    langmem_id = memory_id
+                except ValueError:
+                    langmem_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
+                    print(f"🔧 Converted memory_id '{memory_id}' to UUID '{langmem_id}'")
+                
+                # Use Ray Actor method directly  
+                result = self.store_manager.update_memory_via_actor(namespace, {
+                    "action": "update", 
+                    "id": langmem_id,
+                    "content": content,
+                    "metadata": {**metadata, "type": memory_type, "source": source}
+                })
+                
+                if result["success"]:
+                    print(f"🛠️  DEBUG: Ray Actor update result: {result['result']}")
+                    print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after update operation in namespace '{namespace}'")
+                    return ToolResponse(
+                        text=f"Successfully updated memory {memory_id}: {content[:100]}..."
+                    ), 0.1, {"operation": operation, "memory_id": memory_id}
+                else:
+                    return ToolResponse(text=f"Failed to update memory: {result['result']}"), 0.0, {}
                     
-                    elif operation == "update":
-                        if not memory_id:
-                            return ToolResponse(text="Error: memory_id required for update operation"), 0.0, {}
-                        
-                        # 🔧 FIX: LangMem expects UUID format for "id" field
-                        # Convert human-readable ID to UUID if needed
-                        import uuid
-                        try:
-                            # Try to parse as UUID - if it fails, generate a UUID from the string
-                            uuid.UUID(memory_id)
-                            langmem_id = memory_id
-                        except ValueError:
-                            # Generate deterministic UUID from string
-                            langmem_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
-                            print(f"🔧 Converted memory_id '{memory_id}' to UUID '{langmem_id}'")
-                        
-                        # Update existing memory
-                        print(f"🛠️  DEBUG: About to update memory {memory_id} (UUID: {langmem_id}) with content: '{content[:100]}...'")
-                        
-                        result = await langmem_manage.ainvoke({
-                            "action": "update", 
-                            "id": langmem_id,  # Use UUID-format ID
-                            "content": content,
-                            "metadata": {**metadata, "type": memory_type, "source": source}
-                        })
-                        
-                        print(f"🛠️  DEBUG: LangMem update result: {result}")
-                        
-                        # Check store contents after operation
-                        try:
-                            memories_after = await store.asearch(
-                                ("memories",),
-                                query="",
-                                limit=1000
-                            )
-                            print(f"🛠️  DEBUG: Store now contains {len(memories_after)} memories after update operation")
-                        except Exception as e:
-                            print(f"🛠️  DEBUG: Error checking store contents: {e}")
-                        
-                        return ToolResponse(
-                            text=f"Successfully updated memory {memory_id}: {content[:100]}..."
-                        ), 0.1, {"operation": operation, "memory_id": memory_id}
+            elif operation == "analyze":
+                print(f"🛠️  DEBUG: About to analyze/create memory with content: '{content[:100]}...'")
+                print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
+                
+                # Use Ray Actor method directly
+                result = self.store_manager.create_memory_via_actor(namespace, {
+                    "action": "create",
+                    "content": content,
+                    "metadata": {**metadata, "type": memory_type, "source": source}
+                })
+                
+                if result["success"]:
+                    print(f"🛠️  DEBUG: Ray Actor analyze result: {result['result']}")
+                    print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after analyze operation in namespace '{namespace}'")
+                    return ToolResponse(
+                        text=f"Analyzed and processed content: {content[:100]}..."
+                    ), 0.1, {"operation": operation, "analysis": "completed"}
+                else:
+                    return ToolResponse(text=f"Failed to analyze memory: {result['result']}"), 0.0, {}
                     
-                    elif operation == "analyze":
-                        # Analyze and potentially create memory
-                        print(f"🛠️  DEBUG: About to analyze/create memory with content: '{content[:100]}...'")
-                        print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
-                        
-                        result = await langmem_manage.ainvoke({
-                            "action": "create",
-                            "content": content,
-                            "metadata": {**metadata, "type": memory_type, "source": source}
-                        })
-                        
-                        print(f"🛠️  DEBUG: LangMem analyze result: {result}")
-                        
-                        # Check store contents after operation
-                        try:
-                            memories_after = await store.asearch(
-                                ("memories",),
-                                query="",
-                                limit=1000
-                            )
-                            print(f"🛠️  DEBUG: Store now contains {len(memories_after)} memories after analyze operation")
-                        except Exception as e:
-                            print(f"🛠️  DEBUG: Error checking store contents: {e}")
-                        
-                        return ToolResponse(
-                            text=f"Analyzed and processed content: {content[:100]}..."
-                        ), 0.1, {"operation": operation, "analysis": "completed"}
-                    
-                    else:
-                        return ToolResponse(text=f"Error: Unknown operation '{operation}'"), 0.0, {}
-                        
-                except Exception as e:
-                    logger.error(f"LangMem management failed: {e}")
-                    return ToolResponse(text=f"Memory management failed: {str(e)}"), 0.0, {}
             else:
+                return ToolResponse(text=f"Error: Unknown operation '{operation}'"), 0.0, {}
                 # Mock implementation when LangMem not available
                 mock_memory_id = f"mock_{hash(content) % 10000}"
                 

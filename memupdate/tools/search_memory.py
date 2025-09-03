@@ -162,9 +162,19 @@ class SearchMemoryTool(BaseTool):
 
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         """Execute memory search operation."""
+        _debug_log(f"🔍 SearchMemoryTool.execute called with query: {parameters.get('query', 'N/A')}")
         try:
+            print(f"🔍 MEMUPDATE DEBUG: SearchMemoryTool.execute kwargs: {kwargs}")
+            
             # Get namespace from kwargs
             namespace = kwargs.get("namespace", instance_id)
+            
+            # Check if there's an execute_kwargs that contains the actual namespace
+            execute_kwargs = kwargs.get('execute_kwargs', {})
+            if 'namespace' in execute_kwargs:
+                actual_namespace = execute_kwargs['namespace']
+                print(f"🔍 MEMUPDATE DEBUG: Found actual namespace in execute_kwargs: '{actual_namespace}'")
+                namespace = actual_namespace
             
             # 🔧 CRITICAL FIX: Use mapped namespace if available
             namespace = self.store_manager.get_namespace_for_instance(namespace)
@@ -173,38 +183,46 @@ class SearchMemoryTool(BaseTool):
             top_k = parameters.get("top_k", 5)
             memory_type = parameters.get("memory_type", None)
             threshold = parameters.get("threshold", 0.0)
+            
+            _debug_log(f"🔍 SearchMemoryTool.execute called with namespace='{namespace}', query='{query}'")
 
             if not query:
                 return ToolResponse(text="Error: Query is required for memory search"), 0.0, {}
 
-            # Get shared store for this namespace
-            store = self.store_manager.get_or_create_store(namespace)
-
-            # 🔧 CRITICAL FIX: Create LangMem search tool with shared store per namespace
+            # 🔧 CRITICAL FIX: Use Ray Actor method directly to avoid serialization issues
+            # Getting local store copies via ray.get() creates separate instances!
+            
             if create_search_memory_tool is not None and InMemoryStore is not None:
                 try:
-                    # Create LangMem search tool with the shared store for this namespace
-                    langmem_search = create_search_memory_tool(
-                        namespace=("memories",),
-                        store=store  # Use the shared store for this namespace
-                    )
+                    print(f"🔍 DEBUG: About to search with query: '{query[:50]}...'")
+                    print(f"🔍 DEBUG: Search parameters: top_k={top_k}, memory_type={memory_type}")
                     
-                    # Use LangMem search tool
-                    result = await langmem_search.ainvoke({
-                        "query": query,
-                        "k": top_k
-                    })
+                    # Use Ray Actor method directly
+                    result = self.store_manager.search_memory_via_actor(namespace, query, top_k)
                     
-                    # Format the results  
-                    if result:
-                        # LangMem search returns a formatted string with memories
-                        search_results = str(result)
-                        if "Found some relevant memories:" in search_results or "No memories found" in search_results:
-                            return ToolResponse(text=search_results), 0.1, {"memories_found": "unknown"}
+                    if result["success"]:
+                        search_results = result["results"]
+                        total_count = result["total_count"]
+                        
+                        print(f"🔍 DEBUG: Ray Actor search result: found {len(search_results)} memories")
+                        print(f"🔍 DEBUG: Total memories in namespace '{namespace}': {total_count}")
+                        
+                        if search_results:
+                            # Format results similar to LangMem output
+                            formatted_results = "Found some relevant memories:\n"
+                            for i, mem in enumerate(search_results, 1):
+                                content = mem.get("content", "")[:200] + ("..." if len(mem.get("content", "")) > 200 else "")
+                                formatted_results += f"{i}. {content}\n"
+                                
+                            return ToolResponse(
+                                text=formatted_results
+                            ), 0.1, {"memories_found": len(search_results), "total_memories": total_count}
                         else:
-                            return ToolResponse(text=f"Found some relevant memories:\n{search_results}"), 0.1, {"memories_found": "unknown"}
+                            return ToolResponse(
+                                text=f"No memories found matching '{query}'. Total memories available: {total_count}"
+                            ), 0.1, {"memories_found": 0, "total_memories": total_count}
                     else:
-                        return ToolResponse(text="Found some relevant memories:\n[]"), 0.1, {"memories_found": 0}
+                        return ToolResponse(text=f"Failed to search memories: {result.get('error', 'Unknown error')}", 0.0, {})
                     
                 except Exception as e:
                     logger.error(f"LangMem search failed: {e}")
@@ -225,3 +243,21 @@ class SearchMemoryTool(BaseTool):
         except Exception as e:
             logger.error(f"Memory search execution failed: {e}")
             return ToolResponse(text=f"Memory search failed: {str(e)}"), 0.0, {}
+
+    async def release(self, instance_id: str, **kwargs):
+        """Release tool instance but preserve memory state for reward computation."""
+        # 🔧 CRITICAL: Don't clear namespace here - memory state needed for reward computation
+        # MemoryStoreManager persists across tool instances using class-level storage
+        namespace = kwargs.get("namespace", instance_id)
+        
+        # 🔧 CRITICAL FIX: Use mapped namespace if available
+        namespace = self.store_manager.get_namespace_for_instance(namespace)
+        
+        _debug_log(f"🧹 SearchMemoryTool.release called for namespace '{namespace}' (memory preserved)")
+        
+        # Just log current memory state for debugging
+        current_memories = self.store_manager.get_current_memories(namespace)
+        _debug_log(f"📊 Memory state at release: {len(current_memories)} memories in '{namespace}'")
+        
+        # Return success (no actual cleanup needed since MemoryStoreManager handles persistence)
+        return f"Released SearchMemoryTool instance for namespace '{namespace}'"
