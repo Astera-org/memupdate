@@ -69,7 +69,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.trace.token2text=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
-    trainer.logger='["console"]' \
+    trainer.logger='["console", "wandb"]' \
     trainer.project_name='memupdate-rl' \
     trainer.experiment_name='qwen2.5-3b-memory-grpo-test' \
     trainer.n_gpus_per_node=8 \

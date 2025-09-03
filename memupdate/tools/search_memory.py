@@ -4,11 +4,19 @@ import logging
 import os
 from typing import Any, Optional
 
+print("🔍 SearchMemoryTool: Attempting langmem imports...")
 try:
     from langmem import create_search_memory_tool
+    print("✅ SearchMemoryTool: create_search_memory_tool imported successfully")
     from langgraph.store.memory import InMemoryStore
-except ImportError:
+    print("✅ SearchMemoryTool: InMemoryStore imported successfully")
+except ImportError as e:
+    print(f"❌ SearchMemoryTool: ImportError during langmem imports: {e}")
     # Fallback if langmem not available
+    create_search_memory_tool = None
+    InMemoryStore = None
+except Exception as e:
+    print(f"❌ SearchMemoryTool: Other error during langmem imports: {type(e).__name__}: {e}")
     create_search_memory_tool = None
     InMemoryStore = None
 
@@ -34,7 +42,7 @@ def _debug_log(message: str):
                 f.flush()
         except:
             pass
-    logger.info(f"[TOOL] {message}")
+    print(f"[TOOL] {message}")
 
 
 class SearchMemoryTool(BaseTool):
@@ -65,23 +73,17 @@ class SearchMemoryTool(BaseTool):
             return
             
         try:
-            _debug_log("💾 Creating InMemoryStore (text-based, no embeddings)...")
+            _debug_log("💾 Using shared MemoryStoreManager instead of creating separate store")
             
-            # Create simple text-based store without embeddings
-            # This uses exact string matching which is sufficient for our use case
-            self.store = InMemoryStore()
+            # 🔧 CRITICAL FIX: Don't create separate store - use shared MemoryStoreManager
+            # Each tool creating its own InMemoryStore() causes isolation!
+            # We'll create LangMem tools with shared stores during execute()
             
-            _debug_log("✅ InMemoryStore created successfully (text-based)")
-            logger.info("Using text-based InMemoryStore (no embeddings required)")
+            # 🔧 FIX: Set langmem_search to indicate LangMem is available 
+            self.langmem_search = "available"  # Placeholder to indicate LangMem is working
             
-            # Create LangMem search tool
-            _debug_log("🛠️  Creating LangMem search tool...")
-            self.langmem_search = create_search_memory_tool(
-                namespace=("memories",),
-                store=self.store
-            )
-            _debug_log("✅ LangMem search tool created successfully")
-            logger.info("LangMem search tool initialized successfully")
+            _debug_log("✅ Will use shared store from MemoryStoreManager per namespace")
+            print("✅ SearchMemoryTool will use shared stores per namespace")
         except Exception as e:
             _debug_log(f"❌ LangMem search tool initialization failed: {e}")
             logger.error(f"Failed to initialize LangMem search tool: {e}")
@@ -130,6 +132,19 @@ class SearchMemoryTool(BaseTool):
         initial_memories = kwargs.get('initial_memories', [])
         namespace = kwargs.get('namespace', instance_id)
         
+        print(f"🔍 MEMUPDATE DEBUG: SearchMemoryTool.create called with namespace='{namespace}', instance_id='{instance_id}'")
+        
+        # Check if there's a create_kwargs that contains the actual namespace
+        create_kwargs = kwargs.get('create_kwargs', {})
+        if 'namespace' in create_kwargs:
+            actual_namespace = create_kwargs['namespace']
+            print(f"🔍 MEMUPDATE DEBUG: Found actual namespace in create_kwargs: '{actual_namespace}'")
+            namespace = actual_namespace
+        
+        # 🔧 CRITICAL FIX: Register the mapping from instance_id to intended namespace
+        if namespace != instance_id:
+            self.store_manager.register_instance_namespace(instance_id, namespace)
+        
         if initial_memories:
             self.store_manager.init_store_with_memories(namespace, initial_memories)
             return instance_id, ToolResponse(text=f"Memory search tool initialized with {len(initial_memories)} memories in namespace '{namespace}'")
@@ -139,10 +154,12 @@ class SearchMemoryTool(BaseTool):
 
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         """Execute memory search operation."""
-        _debug_log(f"🔍 SearchMemoryTool.execute called with query: {parameters.get('query', 'N/A')}")
         try:
             # Get namespace from kwargs
             namespace = kwargs.get("namespace", instance_id)
+            
+            # 🔧 CRITICAL FIX: Use mapped namespace if available
+            namespace = self.store_manager.get_namespace_for_instance(namespace)
             
             query = parameters.get("query", "")
             top_k = parameters.get("top_k", 5)
@@ -154,25 +171,35 @@ class SearchMemoryTool(BaseTool):
 
             # Get shared store for this namespace
             store = self.store_manager.get_or_create_store(namespace)
+            
+            # 🔧 CRITICAL: Ensure initial memories are populated in the store
+            await self.store_manager.ensure_initial_memories_in_store(namespace)
 
-            # If LangMem is available, use it
-            if self.langmem_search is not None:
+            # 🔧 CRITICAL FIX: Create LangMem search tool with shared store per namespace
+            if create_search_memory_tool is not None and InMemoryStore is not None:
                 try:
+                    # Create LangMem search tool with the shared store for this namespace
+                    langmem_search = create_search_memory_tool(
+                        namespace=("memories",),
+                        store=store  # Use the shared store for this namespace
+                    )
+                    
                     # Use LangMem search tool
-                    result = await self.langmem_search.ainvoke({
+                    result = await langmem_search.ainvoke({
                         "query": query,
                         "k": top_k
                     })
                     
-                    # Format the results
-                    if result and hasattr(result, 'content'):
-                        search_results = result.content
+                    # Format the results  
+                    if result:
+                        # LangMem search returns a formatted string with memories
+                        search_results = str(result)
+                        if "Found some relevant memories:" in search_results or "No memories found" in search_results:
+                            return ToolResponse(text=search_results), 0.1, {"memories_found": "unknown"}
+                        else:
+                            return ToolResponse(text=f"Found some relevant memories:\n{search_results}"), 0.1, {"memories_found": "unknown"}
                     else:
-                        search_results = str(result) if result else "No memories found"
-                        
-                    return ToolResponse(
-                        text=f"Found {len(result) if isinstance(result, list) else 'some'} relevant memories:\n{search_results}"
-                    ), 0.1, {"memories_found": len(result) if isinstance(result, list) else 0}
+                        return ToolResponse(text="Found some relevant memories:\n[]"), 0.1, {"memories_found": 0}
                     
                 except Exception as e:
                     logger.error(f"LangMem search failed: {e}")

@@ -44,7 +44,7 @@ class MemoryRewardManager(AbstractRewardManager):
         
         # MemUpdate-specific config from kwargs
         self.max_total_memories = kwargs.get("max_total_memories", 100)
-        logger.info(f"Initialized MemoryRewardManager with max_memories={self.max_total_memories}")
+        print(f"✅ Initialized MemoryRewardManager with max_memories={self.max_total_memories}")
 
     def __call__(
         self,
@@ -65,9 +65,23 @@ class MemoryRewardManager(AbstractRewardManager):
                 
                 # Get memory states (set by tools during episode)
                 initial_memories = extra_info.get("initial_memories", [])
-                final_memories = extra_info.get("final_memories", initial_memories)
                 target_question = extra_info.get("target_question", "")
                 target_answer = extra_info.get("target_answer", "")
+                
+                # 🔧 CRITICAL FIX: Read final memories from tool state, not extra_info
+                # extra_info["final_memories"] is never updated by verl's agent loop
+                namespace = extra_info.get("conversation_id")
+                if namespace:
+                    try:
+                        from memupdate.tools.base_memory_tool import MemoryStoreManager
+                        final_memories = MemoryStoreManager.get_current_memories(namespace)
+                        print(f"✅ Retrieved {len(final_memories)} final memories from namespace '{namespace}'")
+                    except Exception as e:
+                        print(f"Failed to get final memories from MemoryStoreManager: {e}")
+                        final_memories = initial_memories  # Fallback
+                else:
+                    print("No conversation_id in extra_info, using initial_memories as final_memories")
+                    final_memories = initial_memories
                 
                 # Compute reward for this episode
                 episode_reward = self.compute_single_reward(
@@ -100,12 +114,22 @@ class MemoryRewardManager(AbstractRewardManager):
                     prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
                     response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
                     
-                    logger.info(f"[MemUpdate Reward {i}]")
-                    logger.info(f"[question] {target_question}")
-                    logger.info(f"[target_answer] {target_answer}")
-                    logger.info(f"[initial_memories] {len(initial_memories)}")
-                    logger.info(f"[final_memories] {len(final_memories)}")
-                    logger.info(f"[reward] {episode_reward:.3f}")
+                    print(f"🔍 [MemUpdate Reward Debug {i}]")
+                    print(f"📝 [question] {target_question}")
+                    print(f"🎯 [target_answer] {target_answer}")
+                    print(f"📚 [initial_memories] {len(initial_memories)} memories")
+                    print(f"💾 [final_memories] {len(final_memories)} memories") 
+                    print(f"🏆 [reward] {episode_reward:.3f}")
+                    
+                    # 🔧 CRITICAL DEBUG: Show memory comparison
+                    if len(final_memories) != len(initial_memories):
+                        print(f"✅ Memory change detected: {len(initial_memories)} → {len(final_memories)}")
+                    else:
+                        print(f"⚠️  No memory count change: {len(initial_memories)} → {len(final_memories)}")
+                    
+                    # Show first few memories for comparison
+                    print(f"🔍 Initial memory sample: {[m.get('content', '')[:50] for m in initial_memories[:2]]}")
+                    print(f"🔍 Final memory sample: {[m.get('content', '')[:50] for m in final_memories[:2]]}")
                 
             except Exception as e:
                 logger.error(f"Error computing reward for batch item {i}: {e}")
