@@ -134,12 +134,20 @@ class SearchMemoryTool(BaseTool):
         
         print(f"🔍 MEMUPDATE DEBUG: SearchMemoryTool.create called with namespace='{namespace}', instance_id='{instance_id}'")
         
-        # Check if there's a create_kwargs that contains the actual namespace
+        # Check if there's a create_kwargs that contains the actual namespace and initial_memories
         create_kwargs = kwargs.get('create_kwargs', {})
         if 'namespace' in create_kwargs:
             actual_namespace = create_kwargs['namespace']
             print(f"🔍 MEMUPDATE DEBUG: Found actual namespace in create_kwargs: '{actual_namespace}'")
             namespace = actual_namespace
+            
+        # 🔧 CRITICAL FIX: Also check for initial_memories in create_kwargs
+        if 'initial_memories' in create_kwargs:
+            actual_initial_memories = create_kwargs['initial_memories']
+            print(f"🔍 MEMUPDATE DEBUG: Found {len(actual_initial_memories)} initial_memories in create_kwargs")
+            initial_memories = actual_initial_memories
+        
+        print(f"🔍 MEMUPDATE DEBUG: Final values - namespace='{namespace}', initial_memories count={len(initial_memories)}")
         
         # 🔧 CRITICAL FIX: Register the mapping from instance_id to intended namespace
         if namespace != instance_id:
@@ -171,9 +179,6 @@ class SearchMemoryTool(BaseTool):
 
             # Get shared store for this namespace
             store = self.store_manager.get_or_create_store(namespace)
-            
-            # 🔧 CRITICAL: Ensure initial memories are populated in the store
-            await self.store_manager.ensure_initial_memories_in_store(namespace)
 
             # 🔧 CRITICAL FIX: Create LangMem search tool with shared store per namespace
             if create_search_memory_tool is not None and InMemoryStore is not None:
