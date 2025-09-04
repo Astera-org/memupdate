@@ -132,22 +132,17 @@ class SearchMemoryTool(BaseTool):
         initial_memories = kwargs.get('initial_memories', [])
         namespace = kwargs.get('namespace', instance_id)
         
-        print(f"🔍 MEMUPDATE DEBUG: SearchMemoryTool.create called with namespace='{namespace}', instance_id='{instance_id}'")
         
         # Check if there's a create_kwargs that contains the actual namespace and initial_memories
         create_kwargs = kwargs.get('create_kwargs', {})
         if 'namespace' in create_kwargs:
             actual_namespace = create_kwargs['namespace']
-            print(f"🔍 MEMUPDATE DEBUG: Found actual namespace in create_kwargs: '{actual_namespace}'")
             namespace = actual_namespace
             
         # 🔧 CRITICAL FIX: Also check for initial_memories in create_kwargs
         if 'initial_memories' in create_kwargs:
             actual_initial_memories = create_kwargs['initial_memories']
-            print(f"🔍 MEMUPDATE DEBUG: Found {len(actual_initial_memories)} initial_memories in create_kwargs")
             initial_memories = actual_initial_memories
-        
-        print(f"🔍 MEMUPDATE DEBUG: Final values - namespace='{namespace}', initial_memories count={len(initial_memories)}")
         
         # 🔧 CRITICAL FIX: Register the mapping from instance_id to intended namespace
         if namespace != instance_id:
@@ -164,7 +159,6 @@ class SearchMemoryTool(BaseTool):
         """Execute memory search operation."""
         _debug_log(f"🔍 SearchMemoryTool.execute called with query: {parameters.get('query', 'N/A')}")
         try:
-            print(f"🔍 MEMUPDATE DEBUG: SearchMemoryTool.execute kwargs: {kwargs}")
             
             # Get namespace from kwargs
             namespace = kwargs.get("namespace", instance_id)
@@ -173,7 +167,6 @@ class SearchMemoryTool(BaseTool):
             execute_kwargs = kwargs.get('execute_kwargs', {})
             if 'namespace' in execute_kwargs:
                 actual_namespace = execute_kwargs['namespace']
-                print(f"🔍 MEMUPDATE DEBUG: Found actual namespace in execute_kwargs: '{actual_namespace}'")
                 namespace = actual_namespace
             
             # 🔧 CRITICAL FIX: Use mapped namespace if available
@@ -194,33 +187,31 @@ class SearchMemoryTool(BaseTool):
             
             if create_search_memory_tool is not None and InMemoryStore is not None:
                 try:
-                    print(f"🔍 DEBUG: About to search with query: '{query[:50]}...'")
-                    print(f"🔍 DEBUG: Search parameters: top_k={top_k}, memory_type={memory_type}")
-                    
                     # Use Ray Actor method directly
                     result = self.store_manager.search_memory_via_actor(namespace, query, top_k)
                     
                     if result["success"]:
                         search_results = result["results"]
                         total_count = result["total_count"]
+                        semantic_search = result.get("semantic_search", False)
                         
-                        print(f"🔍 DEBUG: Ray Actor search result: found {len(search_results)} memories")
-                        print(f"🔍 DEBUG: Total memories in namespace '{namespace}': {total_count}")
+                        search_type = "semantic" if semantic_search else "keyword"
                         
                         if search_results:
                             # Format results similar to LangMem output
-                            formatted_results = "Found some relevant memories:\n"
+                            search_header = f"Found {len(search_results)} relevant memories using {search_type} search:\n"
+                            formatted_results = search_header
                             for i, mem in enumerate(search_results, 1):
                                 content = mem.get("content", "")[:200] + ("..." if len(mem.get("content", "")) > 200 else "")
                                 formatted_results += f"{i}. {content}\n"
                                 
                             return ToolResponse(
                                 text=formatted_results
-                            ), 0.1, {"memories_found": len(search_results), "total_memories": total_count}
+                            ), 0.1, {"memories_found": len(search_results), "total_memories": total_count, "search_type": search_type}
                         else:
                             return ToolResponse(
-                                text=f"No memories found matching '{query}'. Total memories available: {total_count}"
-                            ), 0.1, {"memories_found": 0, "total_memories": total_count}
+                                text=f"No memories found matching '{query}' using {search_type} search. Total memories available: {total_count}"
+                            ), 0.1, {"memories_found": 0, "total_memories": total_count, "search_type": search_type}
                     else:
                         return ToolResponse(text=f"Failed to search memories: {result.get('error', 'Unknown error')}"), 0.0, {}
                     

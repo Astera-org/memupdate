@@ -7,12 +7,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. Do NOT git commit or push unless explicitly told to do so.
 2. Python execution must be done in Docker container - local Python lacks dependencies.
 3. File examination and editing should be done locally (files are mounted to Docker).
+4. Do NOT speculate on what the code does or how things might work or be implemented. Always thoroughly read the code before making any assumptions and research more if needed.
+5. We need to use embedding model for semantic search to update memory or retrieve memories for reward computation. This can be done on CPU because it's fast enough as long as we pre-compute the embeddings of memories.
 
 ## Project Overview
 
 MemUpdate is a reinforcement learning system that trains LLM agents to optimize memory databases through multi-turn tool interactions. The system uses GRPO (Generalized Reward Preference Optimization) with Ray + SGLang + FSDP for distributed training on the LoCoMo dataset.
 
-**Core Architecture**: LLM agents discover and modify memory through function calls rather than hardcoded prompts, with a custom reward system that measures performance improvements.
+**Core Architecture**: LLM agents autonomously discover and modify memory through function calls rather than receiving hardcoded prompts, utilizing a custom reward system that measures performance improvements. In each training trajectory, an agent receives an initial memory state exposed via a Ray Actor, then employs specialized tools to update this memory. During reward computation, the system evaluates performance by: (1) forcing usage of the search_memory tool to retrieve the 5 most relevant memories from both original and updated memory banks, (2) computing the likelihood (via logits) that a fixed evaluation LLM (same as training LLM but frozen) would correctly answer the target question given these memories.
+
+**Key Reward Function**: reward = p(correct_answer | new memory, question) - p(correct_answer | old memory, question)
 
 ## Development Environment
 

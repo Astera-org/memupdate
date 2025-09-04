@@ -335,7 +335,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/locomo", help="Output directory")
-    parser.add_argument("--input", default="/data/users/alan/locomo/data/locomo10.json")
+    parser.add_argument("--input", default="/workspace/locomo/data/locomo10.json")
     args = parser.parse_args()
 
     processor = LoCoMoProcessor(args.input)

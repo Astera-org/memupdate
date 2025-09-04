@@ -4,17 +4,19 @@ import ray
 import os
 import uuid
 import logging
+# torch not needed for CPU-only embeddings
 from typing import Dict, List, Optional
 
 try:
     from langgraph.store.memory import InMemoryStore
+    # IndexConfig not needed for CPU-only cached embeddings
 except ImportError:
     InMemoryStore = None
 
 logger = logging.getLogger(__name__)
 
 
-@ray.remote
+@ray.remote(num_cpus=1)
 class MemoryBrokerActor:
     """
     Ray Actor that serves as memory broker between rollout workers and reward workers.
@@ -34,13 +36,61 @@ class MemoryBrokerActor:
         # namespace -> current memory state cache
         self._memory_cache: Dict[str, List[Dict]] = {}
         
-        print(f"🏢 MemoryBrokerActor initialized in process {os.getpid()}")
+        # 🔧 Simple: CPU-only cached embeddings
+        self._embedding_cache = {}
+        self._load_embedding_cache()
+        
+        print(f"🏢 MemoryBrokerActor (CPU-only) initialized in process {os.getpid()}")
+    
+    def _load_embedding_cache(self):
+        """Load cached embeddings to CPU memory."""
+        try:
+            import pickle
+            
+            cache_file = "/workspace/memupdate/data/embedding_cache/memory_embeddings.pkl"
+            
+            with open(cache_file, 'rb') as f:
+                self._embedding_cache = pickle.load(f)
+            
+            print(f"💾 Loaded {len(self._embedding_cache)} cached embeddings to CPU")
+                
+        except Exception as e:
+            print(f"⚠️ Failed to load embedding cache: {e}")
+            self._embedding_cache = {}
+    
+    # CPU-only cached embeddings - no complex GPU initialization needed
+    
+    def _create_store_with_embeddings(self, namespace: str) -> InMemoryStore:
+        """Create InMemoryStore with cached embeddings (CPU-only)."""
+        try:
+            # Simple CPU-only cached embeddings
+            from .cached_embeddings import InstantCachedEmbeddings
+            
+            embeddings = InstantCachedEmbeddings()
+            
+            index_config = {
+                "embed": embeddings,
+                "dims": 1024,  # Qwen3-0.6B dimension
+                "fields": ["content"],
+            }
+            
+            store = InMemoryStore(index=index_config)
+            
+            return store
+            
+        except Exception as e:
+            print(f"❌ Failed to create store with embeddings: {e}")
+            # Fallback to basic store
+            store = InMemoryStore()
+            print(f"⚠️ Created basic InMemoryStore (no embeddings) for namespace '{namespace}'")
+            return store
     
     async def get_store_for_tools(self, namespace: str) -> InMemoryStore:
         """Get InMemoryStore for tool execution on rollout workers."""
         if namespace not in self._stores:
-            self._stores[namespace] = InMemoryStore()
-            print(f"✅ Created new InMemoryStore for namespace: {namespace}")
+            # 🔧 CRITICAL FIX: Create stores with embeddings from the start
+            store = self._create_store_with_embeddings(namespace)
+            self._stores[namespace] = store
         else:
             print(f"🔄 Using existing InMemoryStore for namespace: {namespace}")
         return self._stores[namespace]
@@ -48,8 +98,8 @@ class MemoryBrokerActor:
     async def create_memory_in_store(self, namespace: str, memory_data: dict) -> dict:
         """Create memory directly in Ray Actor store (avoids serialization issues)."""
         if namespace not in self._stores:
-            self._stores[namespace] = InMemoryStore()
-            print(f"✅ Created new InMemoryStore for namespace: {namespace}")
+            store = self._create_store_with_embeddings(namespace)
+            self._stores[namespace] = store
         
         store = self._stores[namespace]
         
@@ -82,7 +132,10 @@ class MemoryBrokerActor:
     async def update_memory_in_store(self, namespace: str, memory_data: dict) -> dict:
         """Update memory directly in Ray Actor store."""
         if namespace not in self._stores:
-            return {"result": "Namespace not found", "success": False}
+            # Create store with embeddings if it doesn't exist (rare case)
+            print(f"🔧 Creating new store with embeddings for namespace '{namespace}' during update")
+            store = self._create_store_with_embeddings(namespace)
+            self._stores[namespace] = store
         
         store = self._stores[namespace]
         
@@ -112,12 +165,25 @@ class MemoryBrokerActor:
     async def search_memory_in_store(self, namespace: str, query: str, limit: int = 10) -> dict:
         """Search memory directly in Ray Actor store."""
         if namespace not in self._stores:
+            print(f"⚠️ Namespace '{namespace}' not found in stores")
             return {"results": [], "success": False}
         
         store = self._stores[namespace]
         
         try:
+            # Debug: Check if store has embeddings configured
+            has_embeddings = hasattr(store, 'index_config') and store.index_config is not None
+            if has_embeddings:
+                print(f"🔍 Semantic search for '{query}' in namespace '{namespace}' (embeddings enabled)")
+            else:
+                print(f"⚠️ Keyword search for '{query}' in namespace '{namespace}' (no embeddings)")
+            
+            # Perform search - this will use semantic search if embeddings are configured
             memories = await store.asearch(("memories",), query=query, limit=limit)
+            
+            # Debug: Log search results
+            print(f"  → Found {len(memories)} results, 1st result={memories[0].value.get('content', '')}")
+            
             results = []
             for mem in memories:
                 results.append({
@@ -129,11 +195,14 @@ class MemoryBrokerActor:
             return {
                 "results": results,
                 "total_count": len(await store.asearch(("memories",), query="", limit=1000)),
-                "success": True
+                "success": True,
+                "semantic_search": has_embeddings
             }
             
         except Exception as e:
             print(f"❌ Error searching memory in Ray Actor store: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 "results": [],
                 "success": False
@@ -149,11 +218,14 @@ class MemoryBrokerActor:
             return namespace
             
         print(f"🆕 Creating NEW store for namespace {namespace} with {len(initial_memories)} initial memories")
-        store = InMemoryStore()
+        
+        # 🔧 FIX: Use shared helper method for consistent store creation
+        store = self._create_store_with_embeddings(namespace)
+            
         self._stores[namespace] = store
         self._initial_memories[namespace] = initial_memories.copy()
         
-        # Populate the LangMem store with initial memories
+        # Simple store population - InMemoryStore will handle embeddings via IndexConfig
         for i, memory in enumerate(initial_memories):
             memory_id = memory.get('id', f"init_mem_{i}")
             content = memory.get('content', '')
@@ -177,7 +249,6 @@ class MemoryBrokerActor:
             )
         
         self._memory_cache[namespace] = initial_memories.copy()
-        print(f"✅ Successfully initialized NEW conversation memory for {namespace} with {len(initial_memories)} memories")
         return namespace
     
     async def get_final_memories_for_reward(self, namespace: str) -> List[Dict]:
@@ -189,15 +260,13 @@ class MemoryBrokerActor:
         store = self._stores[namespace]
         
         try:
-            print(f"🔍 DEBUG: About to query store for namespace {namespace} - store type: {type(store)}")
             # Query all memories from the actual LangMem store
             memories = await store.asearch(
                 ("memories",),  # namespace_prefix as positional argument
                 query="",  # Empty query returns all memories
                 limit=1000  # High limit to get all memories
             )
-            
-            print(f"🔍 DEBUG: Store query successful - returned {len(memories)} memories")
+        
             
             # Convert to reward manager format
             result = []
@@ -211,7 +280,6 @@ class MemoryBrokerActor:
                     "updated_at": mem.updated_at.isoformat() if mem.updated_at else None,
                 })
             
-            print(f"🎯 Retrieved {len(result)} final memories for reward computation from {namespace}")
             return result
             
         except Exception as e:
@@ -255,13 +323,14 @@ class MemoryStoreManager:
                 # Check if actor already exists in Ray cluster
                 cls._broker_actor = ray.get_actor("memory_broker")
                 print(f"📡 Connected to existing MemoryBrokerActor from process {os.getpid()}")
+                print(f"ℹ️  NOTE: If you see IndexConfig warnings, restart training to pick up code changes")
                 
             except ValueError:
                 # Actor doesn't exist, create it
                 try:
                     cls._broker_actor = MemoryBrokerActor.options(
                         name="memory_broker",
-                        lifetime="detached"  # Survives driver failures
+                        lifetime="detached",  # Survives driver failures
                     ).remote()
                     print(f"🏢 Created new MemoryBrokerActor from process {os.getpid()}")
                 except Exception as create_error:

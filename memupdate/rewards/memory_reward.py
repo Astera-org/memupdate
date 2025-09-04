@@ -44,6 +44,7 @@ class MemoryRewardManager(AbstractRewardManager):
         
         # MemUpdate-specific config from kwargs
         self.max_total_memories = kwargs.get("max_total_memories", 100)
+        self.current_namespace = None  # Track current namespace for semantic search
         print(f"✅ Initialized MemoryRewardManager with max_memories={self.max_total_memories}")
 
     def __call__(
@@ -71,11 +72,12 @@ class MemoryRewardManager(AbstractRewardManager):
                 # 🔧 CRITICAL FIX: Read final memories from tool state, not extra_info
                 # extra_info["final_memories"] is never updated by verl's agent loop
                 namespace = extra_info.get("conversation_id")
+                self.current_namespace = namespace  # Store for semantic search
+                
                 if namespace:
                     try:
                         from memupdate.tools.base_memory_tool import MemoryStoreManager
                         final_memories = MemoryStoreManager.get_current_memories(namespace)
-                        print(f"✅ Retrieved {len(final_memories)} final memories from namespace '{namespace}'")
                     except Exception as e:
                         print(f"Failed to get final memories from MemoryStoreManager: {e}")
                         final_memories = initial_memories  # Fallback
@@ -187,8 +189,8 @@ class MemoryRewardManager(AbstractRewardManager):
         Returns score between 0 and 1.
         """
         try:
-            # 1. Retrieve relevant memories (RAG)
-            context_memories = self._rag_retrieve(memory_db, question, top_k=5)
+            # 1. Retrieve relevant memories (RAG) - try semantic search first
+            context_memories = self._rag_retrieve_semantic(memory_db, question, top_k=5)
             
             # 2. Build context string
             if not context_memories:
@@ -242,6 +244,38 @@ class MemoryRewardManager(AbstractRewardManager):
         # Sort by relevance and return top-k
         scored_memories.sort(reverse=True, key=lambda x: x[0])
         return [mem for _, mem in scored_memories[:top_k]]
+    
+    def _rag_retrieve_semantic(self, memory_db: List[Dict], question: str, top_k: int = 5) -> List[Dict]:
+        """
+        Retrieve top-k relevant memories using semantic search when possible.
+        Falls back to keyword matching if semantic search unavailable.
+        """
+        # Try semantic search if we have a namespace
+        if self.current_namespace:
+            try:
+                from memupdate.tools.base_memory_tool import MemoryStoreManager
+                print(f"🔍 Using semantic search for question: '{question[:50]}...'")
+                
+                # Use Ray Actor semantic search
+                result = MemoryStoreManager.search_memory_via_actor(
+                    namespace=self.current_namespace,
+                    query=question,
+                    limit=top_k
+                )
+                
+                if result["success"] and result["results"]:
+                    semantic_memories = result["results"]
+                    print(f"✅ Semantic search found {len(semantic_memories)} relevant memories -> first memory: {semantic_memories[0]['content']}")
+                    return semantic_memories
+                else:
+                    print(f"⚠️ Semantic search failed, falling back to keyword matching, result success={result['success']}, result results={result['results']}")
+                    
+            except Exception as e:
+                print(f"⚠️ Semantic search error ({e}), falling back to keyword matching")
+        
+        # Fallback to keyword-based search
+        print(f"🔍 Using keyword-based search for question: '{question[:50]}...'")
+        return self._rag_retrieve(memory_db, question, top_k)
 
     def _compute_memory_efficiency(self, memory_old: List[Dict], memory_new: List[Dict]) -> float:
         """

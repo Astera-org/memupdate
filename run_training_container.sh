@@ -79,10 +79,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
-    trainer.test_freq=5 \
+    trainer.test_freq=-1 \
     trainer.total_training_steps=1 \
     actor_rollout_ref.rollout.multi_turn.enable=True \
-    actor_rollout_ref.rollout.multi_turn.max_assistant_turns=30 \
+    actor_rollout_ref.rollout.multi_turn.max_assistant_turns=3 \
     actor_rollout_ref.rollout.multi_turn.use_inference_chat_template=True \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$MEMUPDATE_DIR/configs/tool_config/memory_tools.yaml" \
     data.train_files="$MEMUPDATE_DIR/data/locomo/train.parquet" \
