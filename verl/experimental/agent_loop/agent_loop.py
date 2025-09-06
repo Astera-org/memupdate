@@ -282,6 +282,29 @@ class RewardManagerWorker:
             **{k: np.array([v]) for k, v in kwargs.items()},
             "__num_turns__": np.array([output.num_turns]),
         }
+
+        # 🔧 MEMUPDATE: Replace conversation_id with trial_namespace from output.extra_fields
+        if "extra_info" in non_tensor_batch and output.extra_fields.get("trial_namespace"):
+            trial_namespace = output.extra_fields["trial_namespace"]
+            # Get the extra_info dict (it's wrapped in np.array)
+            extra_info_array = non_tensor_batch["extra_info"]
+            if len(extra_info_array) > 0:
+                extra_info = (
+                    extra_info_array[0].copy() if hasattr(extra_info_array[0], "copy") else dict(extra_info_array[0])
+                )
+
+                # Debug print showing the replacement
+                original_conversation_id = extra_info.get("conversation_id", "NOT_FOUND")
+                print(f"🔄 [AgentLoop->Reward] Replacing conversation_id in DataProto:")
+                print(f"   Original conversation_id: {original_conversation_id}")
+                print(f"   Trial namespace:          {trial_namespace}")
+                if len(trial_namespace.split("-")) == 4:
+                    print("🔄 [AgentLoop->Reward] Breaking point because trial_namespace is 4 parts, which is wrong")
+
+                # Replace conversation_id with trial_namespace
+                extra_info["conversation_id"] = trial_namespace
+                non_tensor_batch["extra_info"] = np.array([extra_info])
+
         data = DataProto(
             batch=batch,
             non_tensor_batch=non_tensor_batch,

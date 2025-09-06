@@ -96,6 +96,40 @@ class ToolAgentLoop(AgentLoopBase):
         response_mask, response_logprobs = [], []
         tools_kwargs = kwargs.get("tools_kwargs", {})
 
+        # 🔧 MEMUPDATE: Create trial-specific namespace and pre-initialize memory store
+        # Transform base namespace to trial-specific namespace using request_id
+        trial_namespace = None
+        if tools_kwargs:
+            # First, update all tool namespaces to be trial-specific
+            for tool_name, tool_config in tools_kwargs.items():
+                create_kwargs = tool_config.get("create_kwargs", {})
+                base_namespace = create_kwargs.get("namespace")
+                sample_id = create_kwargs.get("sample_id")
+
+                if base_namespace:
+                    # Create trial-specific namespace
+                    trial_namespace = f"{base_namespace}-{request_id[:8]}"
+
+                    # Debug print showing the transformation
+                    print(f"🔄 [AgentLoop] Namespace transformation for {tool_name}:")
+                    print(f"   Original namespace: {base_namespace}")
+                    print(f"   Trial namespace:    {trial_namespace}")
+
+                    # Update the namespace in tools_kwargs
+                    tool_config["create_kwargs"]["namespace"] = trial_namespace
+
+            # Now pre-initialize the store with the trial-specific namespace
+            if trial_namespace and sample_id:
+                try:
+                    from memupdate.tools.base_memory_tool import MemoryStoreManager
+
+                    MemoryStoreManager.ensure_store_initialized(trial_namespace, sample_id)
+                    print(
+                        f"🚀 [AgentLoop] Pre-initialized memory store for trial namespace '{trial_namespace}' from sample '{sample_id}'"
+                    )
+                except Exception as e:
+                    print(f"⚠️ [AgentLoop] Failed to pre-initialize memory store: {e}")
+
         user_turns, assistant_turns = 0, 0
         while True:
             with simple_timer("generate_sequences", metrics):
@@ -216,6 +250,12 @@ class ToolAgentLoop(AgentLoopBase):
 
         multi_modal_data = {"image": image_data} if image_data is not None else {}
 
+        # 🔧 MEMUPDATE: Store trial_namespace in extra_fields for reward computation
+        extra_fields = {}
+        if trial_namespace:
+            extra_fields["trial_namespace"] = trial_namespace
+            print(f"📦 [AgentLoop] Storing trial_namespace in output.extra_fields: {trial_namespace}")
+
         output = AgentLoopOutput(
             prompt_ids=prompt_ids,
             response_ids=response_ids[: self.response_length],
@@ -224,6 +264,7 @@ class ToolAgentLoop(AgentLoopBase):
             response_logprobs=response_logprobs[: self.response_length] if response_logprobs else None,
             num_turns=user_turns + assistant_turns + 1,
             metrics=metrics,
+            extra_fields=extra_fields,
         )
         return output
 
