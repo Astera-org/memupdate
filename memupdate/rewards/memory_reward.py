@@ -44,7 +44,6 @@ class MemoryRewardManager(AbstractRewardManager):
         
         # MemUpdate-specific config from kwargs
         self.max_total_memories = kwargs.get("max_total_memories", 100)
-        self.current_namespace = None  # Track current namespace for semantic search
         print(f"✅ Initialized MemoryRewardManager with max_memories={self.max_total_memories}")
 
     def __call__(
@@ -53,7 +52,15 @@ class MemoryRewardManager(AbstractRewardManager):
         return_dict: bool = False,
     ) -> torch.Tensor | dict[str, Any]:
         """Main entry point for reward computation."""
-        
+        # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
+        if "rm_scores" in data.batch.keys():
+            if return_dict:
+                reward_extra_keys = data.meta_info.get("reward_extra_keys", [])
+                reward_extra_info = {key: data.non_tensor_batch[key] for key in reward_extra_keys}
+                return {"reward_tensor": data.batch["rm_scores"], "reward_extra_info": reward_extra_info}
+            else:
+                return data.batch["rm_scores"]
+            
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
         
@@ -65,18 +72,30 @@ class MemoryRewardManager(AbstractRewardManager):
                 extra_info = data_item.non_tensor_batch.get("extra_info", {})
                 
                 # Get memory states (set by tools during episode)
-                initial_memories = extra_info.get("initial_memories", [])
+                # 🔧 NEW: Get initial memories from broker using sample_id
+                sample_id = extra_info.get("original_sample_id")  # e.g., "conv-48"
+                if sample_id:
+                    from memupdate.tools.base_memory_tool import MemoryStoreManager
+                    initial_memories = MemoryStoreManager.get_initial_memories_for_sample(sample_id)
+                else:
+                    print(f"⚠️ No sample_id found in extra_info, using empty initial memories")
+                    initial_memories = []
+                    
                 target_question = extra_info.get("target_question", "")
                 target_answer = extra_info.get("target_answer", "")
                 
                 # 🔧 CRITICAL FIX: Read final memories from tool state, not extra_info
                 # extra_info["final_memories"] is never updated by verl's agent loop
-                namespace = extra_info.get("conversation_id")
-                self.current_namespace = namespace  # Store for semantic search
+                raw_namespace = extra_info.get("conversation_id")
+                
+                # 🔧 CRITICAL FIX: Use same namespace mapping as tools to ensure consistency
+                from memupdate.tools.base_memory_tool import MemoryStoreManager
+                namespace = MemoryStoreManager.get_namespace_for_instance(raw_namespace)
                 
                 if namespace:
                     try:
                         from memupdate.tools.base_memory_tool import MemoryStoreManager
+                        print(f"In memory_reward.py calling get_current_memories with namespace: {namespace}")
                         final_memories = MemoryStoreManager.get_current_memories(namespace)
                     except Exception as e:
                         print(f"Failed to get final memories from MemoryStoreManager: {e}")
@@ -90,9 +109,18 @@ class MemoryRewardManager(AbstractRewardManager):
                     initial_memories, 
                     final_memories,
                     target_question,
-                    target_answer
+                    target_answer,
+                    namespace  # Pass namespace directly to avoid sharing across samples
                 )
                 
+                # MEMUPDATE: Clean up memory store after reward computation
+                # This ensures the next episode starts with fresh memory even if
+                # the same namespace is reused (e.g., when dataset repeats in batches)
+                if namespace:
+                    from memupdate.tools.base_memory_tool import MemoryStoreManager
+                    MemoryStoreManager.cleanup_conversation(namespace)
+                    print(f"🧹 In memory_reward.py, Cleaned up memory store for namespace '{namespace}' after reward computation")
+
                 # Decode response for validation length
                 response_ids = data_item.batch["responses"]
                 prompt_length = data_item.batch["prompts"].shape[-1]
@@ -155,6 +183,7 @@ class MemoryRewardManager(AbstractRewardManager):
         memory_new: List[Dict], 
         target_question: str,
         target_answer: str,
+        namespace: str = None,
     ) -> float:
         """
         Compute reward for a single memory update operation.
@@ -164,10 +193,12 @@ class MemoryRewardManager(AbstractRewardManager):
         2. Evaluate QA performance with new memory  
         3. Reward = performance_delta × memory_efficiency
         """
+        print(f"🔍 Computing reward for single QA with old memory: {len(memory_old)} memories, new memory: {len(memory_new)} memories")
+        print(f"### diff in memory count: {len(memory_new) - len(memory_old)}")
         try:
             # 1. Compute QA performance difference
-            performance_old = self.evaluate_single_qa(memory_old, target_question, target_answer)
-            performance_new = self.evaluate_single_qa(memory_new, target_question, target_answer)
+            performance_old = self.evaluate_single_qa(memory_old, target_question, target_answer, namespace)
+            performance_new = self.evaluate_single_qa(memory_new, target_question, target_answer, namespace)
             performance_delta = performance_new - performance_old
             
             # 2. Memory efficiency factor
@@ -182,7 +213,7 @@ class MemoryRewardManager(AbstractRewardManager):
             logger.error(f"Reward computation failed: {e}")
             return -0.1  # Small penalty for errors
 
-    def evaluate_single_qa(self, memory_db: List[Dict], question: str, answer: str) -> float:
+    def evaluate_single_qa(self, memory_db: List[Dict], question: str, answer: str, namespace: str = None) -> float:
         """
         Evaluate QA performance for a single question using RAG + context overlap.
         
@@ -190,7 +221,7 @@ class MemoryRewardManager(AbstractRewardManager):
         """
         try:
             # 1. Retrieve relevant memories (RAG) - try semantic search first
-            context_memories = self._rag_retrieve_semantic(memory_db, question, top_k=5)
+            context_memories = self._rag_retrieve_semantic(memory_db, question, top_k=5, namespace=namespace)
             
             # 2. Build context string
             if not context_memories:
@@ -245,20 +276,20 @@ class MemoryRewardManager(AbstractRewardManager):
         scored_memories.sort(reverse=True, key=lambda x: x[0])
         return [mem for _, mem in scored_memories[:top_k]]
     
-    def _rag_retrieve_semantic(self, memory_db: List[Dict], question: str, top_k: int = 5) -> List[Dict]:
+    def _rag_retrieve_semantic(self, memory_db: List[Dict], question: str, top_k: int = 5, namespace: str = None) -> List[Dict]:
         """
         Retrieve top-k relevant memories using semantic search when possible.
         Falls back to keyword matching if semantic search unavailable.
         """
         # Try semantic search if we have a namespace
-        if self.current_namespace:
+        if namespace:
             try:
                 from memupdate.tools.base_memory_tool import MemoryStoreManager
-                print(f"🔍 Using semantic search for question: '{question[:50]}...'")
+                # print(f"🔍 Using semantic search for question: '{question[:50]}...'")
                 
                 # Use Ray Actor semantic search
                 result = MemoryStoreManager.search_memory_via_actor(
-                    namespace=self.current_namespace,
+                    namespace=namespace,
                     query=question,
                     limit=top_k
                 )
@@ -274,7 +305,7 @@ class MemoryRewardManager(AbstractRewardManager):
                 print(f"⚠️ Semantic search error ({e}), falling back to keyword matching")
         
         # Fallback to keyword-based search
-        print(f"🔍 Using keyword-based search for question: '{question[:50]}...'")
+        print(f"🔍 Using keyword-based search for question: '{question[:50]}...', namespace: {namespace}")
         return self._rag_retrieve(memory_db, question, top_k)
 
     def _compute_memory_efficiency(self, memory_old: List[Dict], memory_new: List[Dict]) -> float:
@@ -288,6 +319,7 @@ class MemoryRewardManager(AbstractRewardManager):
         """
         old_size = len(memory_old)
         new_size = len(memory_new)
+        
         
         # Size penalty/bonus
         if new_size > self.max_total_memories:

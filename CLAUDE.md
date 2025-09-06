@@ -92,16 +92,26 @@ Six memory management tools inherit from verl's `BaseTool`:
 5. **MergeMemoryTool**: Consolidate memories (summarize/concatenate/extract)
 6. **SplitMemoryTool**: Decompose memories (temporal/thematic/speaker)
 
-**Critical Implementation Pattern:**
+**Verl Tool Call Workflow**
+In a multi-turn conversation, the flow looks like this:
 
-```python
-# WRONG: Creates local store copies (serialization issue)
-store = self.store_manager.get_or_create_store(namespace)
-result = await langmem_tool.ainvoke(params)
+Conversation Turn 1:
+  Assistant generates: "I need to search for X" + tool_call
+  For each tool_call in parallel:
+    1. create(instance_id_1) → Initialize tool instance
+    2. execute(instance_id_1, params) → Perform search
+    3. release(instance_id_1) → Clean up instance
+  Tool responses are added to conversation
 
-# CORRECT: Direct Ray Actor operations
-result = self.store_manager.create_memory_via_actor(namespace, params)
-```
+Conversation Turn 2:
+  Assistant generates: "Let me search for Y too" + tool_call
+  For each tool_call in parallel:
+    1. create(instance_id_2) → New instance (different ID)
+    2. execute(instance_id_2, params) → Perform new search
+    3. release(instance_id_2) → Clean up new instance
+  Tool responses are added to conversation
+
+... and so on
 
 ### Training Flow
 

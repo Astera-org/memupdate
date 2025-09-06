@@ -1,24 +1,19 @@
 # THIS IS THE EXACT FORMAT VERL EXPECTS - DO NOT DEVIATE
 tools:
-  - class_name: "memupdate.tools.search_memory.SearchMemoryTool"
-    config:
-      type: "native"  # REQUIRED: Must be "native" for custom tools
-      max_results: 10
-      default_top_k: 5
-      similarity_threshold: 0.3
-    tool_schema:  # Optional but recommended
-      type: "function"
-      function:
-        name: "search_memory"
-        description: "Search and retrieve relevant memories from the memory database"
-        
   - class_name: "memupdate.tools.manage_memory.ManageMemoryTool"
     config:
       type: "native"
       max_content_length: 1000
       auto_type_detection: true
       enable_metadata: true
-      
+
+  - class_name: "memupdate.tools.search_memory.SearchMemoryTool"
+    config:
+      type: "native"  # REQUIRED: Must be "native" for custom tools
+      max_results: 10
+      default_top_k: 5
+      similarity_threshold: 0.3
+        
   - class_name: "memupdate.tools.delete_memory.DeleteMemoryTool"
     config:
       type: "native"

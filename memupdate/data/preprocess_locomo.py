@@ -59,16 +59,12 @@ class LoCoMoProcessor:
         import uuid
 
         for conv in conversations:
-            sample_id = conv.get("sample_id", "unknown")
+            sample_id = conv.get("sample_id", "unknown") # like conv-48
             qa_pairs = conv.get("qa", [])
-            conversation_data = conv.get(
-                "conversation", {}
-            )  # LoCoMo uses "conversation", not "conversations"
-            facts = conv.get(
-                "observation", {}
-            )  # LoCoMo uses "observation", not "facts"
 
             for qa_idx, qa in enumerate(qa_pairs):
+                if qa['category'] == 5: # adversirial category, not used in Mem0 so pass for now:
+                    continue
                 # 🔧 CRITICAL FIX: Create unique trajectory ID for each QA pair
                 # Each QA pair gets its own namespace to prevent memory bank sharing
                 trajectory_id = f"{sample_id}-qa{qa_idx}-{str(uuid.uuid4())[:8]}"
@@ -80,61 +76,29 @@ class LoCoMoProcessor:
                     "answer": qa.get("answer", ""),
                     "evidence": qa.get("evidence", []),
                     "category": qa.get("category", 0),
-                    "conversations": conversation_data,
-                    "facts": facts,  # This will be the observation data
                 }
                 qa_trials.append(trial)
 
         logger.info(f"Extracted {len(qa_trials)} QA trials with unique trajectory IDs")
         return qa_trials
 
-    def convert_facts_to_memories(self, observations: Dict) -> List[Dict]:
-        """Convert conversation observations to initial memory entries."""
-        memories = []
-
-        # LoCoMo observations are nested under session keys
-        for session_key, session_obs in observations.items():
-            if isinstance(session_obs, dict):
-                for speaker, speaker_facts in session_obs.items():
-                    for fact_entry in speaker_facts:
-                        if isinstance(fact_entry, list) and len(fact_entry) >= 2:
-                            fact_text, evidence = fact_entry[0], fact_entry[1]
-
-                            memory = {
-                                "content": fact_text,
-                                "speaker": speaker,
-                                "evidence": evidence,
-                                "session": session_key,
-                                "memory_type": "episodic",  # Default type
-                                "source": "conversation_observations",
-                            }
-                            memories.append(memory)
-
-        return memories
-
     def create_verl_training_data(self, qa_trials: List[Dict]) -> List[Dict]:
         """Convert QA trials to verl training format with full context in messages."""
         training_data = []
 
         for idx, trial in enumerate(qa_trials):
-            # Extract initial memories from conversation facts
-            initial_memories = self.convert_facts_to_memories(trial["facts"])
-
-            # Don't hardcode memory in prompt - let LLM discover via tool calls!
-
             # Create system prompt (tools will be auto-injected by tokenizer)
             system_content = """You are a memory management agent. Your task is to optimize a memory database to better answer future questions.
 
 IMPORTANT: Because we're in debug mode still, you need to help me call these tools to see what the memory database looks like.
-1. search_memory() to discover the current memory state
-2. manage_memory() to update the memory database
-3. manage_memory() to create a memory
+1. search_memory() to discover memories using natural language queries
+3. manage_memory() to create a new memory
 """
 
             # Create user prompt
             user_content = f"""Target question to optimize for: {trial["question"]}
 
-Analyze and update the memory database to ensure this question can be answered correctly."""
+Update the memory database to ensure this question can be answered correctly."""
 
             # IMPORTANT: verl expects these exact keys in this format
             record = {
@@ -149,19 +113,19 @@ Analyze and update the memory database to ensure this question can be answered c
                     "index": idx,
                     "need_tools_kwargs": True,  # CRITICAL: This enables tool usage
                     "tools_kwargs": {
-                        # 🔧 CRITICAL FIX: Use unique trajectory_id for namespace isolation
-                        # Each QA pair gets its own memory bank to prevent cross-contamination
+                        # 🔧 NEW: Use sample_id to reference initial memories in MemoryBrokerActor
+                        # Each QA pair gets its own namespace for memory isolation
                         "search_memory": {
                             "create_kwargs": {
-                                "initial_memories": initial_memories,
-                                "namespace": trial["trajectory_id"],
+                                "sample_id": trial["sample_id"],  # e.g., "conv-48"
+                                "namespace": trial["trajectory_id"],  # e.g., "conv-48-qa2-abc123"
                             },
                             "execute_kwargs": {"namespace": trial["trajectory_id"]},
                             "calc_reward_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "manage_memory": {
                             "create_kwargs": {
-                                "initial_memories": initial_memories,
+                                "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
                             "execute_kwargs": {"namespace": trial["trajectory_id"]},
@@ -169,28 +133,28 @@ Analyze and update the memory database to ensure this question can be answered c
                         },
                         "delete_memory": {
                             "create_kwargs": {
-                                "initial_memories": initial_memories,
+                                "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
                             "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "sample_memory": {
                             "create_kwargs": {
-                                "initial_memories": initial_memories,
+                                "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
                             "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "merge_memory": {
                             "create_kwargs": {
-                                "initial_memories": initial_memories,
+                                "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
                             "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "split_memory": {
                             "create_kwargs": {
-                                "initial_memories": initial_memories,
+                                "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
                             "execute_kwargs": {"namespace": trial["trajectory_id"]},
@@ -200,10 +164,8 @@ Analyze and update the memory database to ensure this question can be answered c
                     "target_question": trial["question"],
                     "target_answer": trial["answer"],
                     "conversation_id": trial["trajectory_id"],  # Use unique trajectory ID for reward isolation
-                    "initial_memories": initial_memories,
                     "evidence": trial.get("evidence", []),
                     "category": trial.get("category", 0),
-                    # Keep original sample_id for reference
                     "original_sample_id": trial["sample_id"],
                 },
             }
@@ -252,7 +214,7 @@ Begin optimizing the memory database now."""
         df.to_parquet(output_path, index=False)
         logger.info(f"Saved {len(data)} examples to {output_path}")
 
-    def save_parquet_files(self, output_dir: str = "data/locomo"):
+    def save_parquet_files(self, output_dir: str = "/workspace/memupdate/data/locomo"):
         """Save training data as parquet files."""
         import os
 
@@ -301,40 +263,13 @@ Begin optimizing the memory database now."""
         )
         print(f"✅ Saved {len(test_data)} test samples to {output_dir}/test.parquet")
 
-    def process_full_pipeline(
-        self, output_dir: str = "/data/users/alan/memupdate/data/locomo"
-    ):
-        """Run the complete preprocessing pipeline."""
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        # Use the new save_parquet_files method
-        train_df, test_df = self.save_parquet_files(str(output_path))
-
-        # Save summary stats
-        stats = {
-            "total_conversations": 10,  # LoCoMo has 10 conversations
-            "train_conversations": 7,
-            "test_conversations": 3,
-            "train_qa_pairs": len(train_df),
-            "test_qa_pairs": len(test_df),
-            "total_training_examples": len(train_df),
-            "total_test_examples": len(test_df),
-        }
-
-        with open(output_path / "dataset_stats.json", "w") as f:
-            json.dump(stats, f, indent=2)
-
-        logger.info(f"Preprocessing complete. Stats: {stats}")
-        return stats
-
 
 def main():
     """Run preprocessing from command line."""
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="data/locomo", help="Output directory")
+    parser.add_argument("--output", default="/workspace/memupdate/data/locomo", help="Output directory")
     parser.add_argument("--input", default="/workspace/locomo/data/locomo10.json")
     args = parser.parse_args()
 

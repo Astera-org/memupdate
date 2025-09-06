@@ -5,7 +5,7 @@ import os
 import uuid
 import logging
 # torch not needed for CPU-only embeddings
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 try:
     from langgraph.store.memory import InMemoryStore
@@ -31,16 +31,17 @@ class MemoryBrokerActor:
     def __init__(self):
         # namespace/conversation_id -> InMemoryStore instance
         self._stores: Dict[str, InMemoryStore] = {}
-        # namespace -> initial memories for reward computation
-        self._initial_memories: Dict[str, List[Dict]] = {}
-        # namespace -> current memory state cache
-        self._memory_cache: Dict[str, List[Dict]] = {}
         
-        # 🔧 Simple: CPU-only cached embeddings
+        # Centralized storage for conversation memories by sample_id
+        # sample_id (e.g., "conv-48") -> initial memories from LoCoMo dataset
+        self._conversation_memories: Dict[str, List[Dict]] = {}
+        
+        # CPU-only cached embeddings (key: content hash, value: embedding vector)
         self._embedding_cache = {}
         self._load_embedding_cache()
+        self._load_conversation_memories()
         
-        print(f"🏢 MemoryBrokerActor (CPU-only) initialized in process {os.getpid()}")
+        print(f"🏢 MemoryBrokerActor (CPU-only) initialized with {len(self._conversation_memories)} conversations in process {os.getpid()}")
     
     def _load_embedding_cache(self):
         """Load cached embeddings to CPU memory."""
@@ -57,6 +58,79 @@ class MemoryBrokerActor:
         except Exception as e:
             print(f"⚠️ Failed to load embedding cache: {e}")
             self._embedding_cache = {}
+    
+    def _load_conversation_memories(self):
+        """Load all conversation memories from LoCoMo dataset at startup."""
+        try:
+            import json
+            from pathlib import Path
+            
+            locomo_path = Path("/workspace/locomo/data/locomo10.json")
+            if not locomo_path.exists():
+                print(f"⚠️ LoCoMo data not found at {locomo_path}, skipping conversation memory loading")
+                return
+            
+            with open(locomo_path, 'r') as f:
+                locomo_data = json.load(f)
+            
+            # Process each conversation
+            for conv in locomo_data:
+                sample_id = conv.get("sample_id", "unknown")
+                observation = conv.get("observation", {})
+                
+                # Convert observations to memory format (same logic as preprocess_locomo.py)
+                memories = self._convert_observation_to_memories(observation)
+                
+                self._conversation_memories[sample_id] = memories
+                print(f"  📚 Loaded {len(memories)} memories for {sample_id}")
+            
+            print(f"✅ Loaded conversation memories for {len(self._conversation_memories)} conversations")
+            
+        except Exception as e:
+            print(f"❌ Failed to load conversation memories: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _convert_observation_to_memories(self, observations: Dict) -> List[Dict]:
+        """Convert conversation observations to initial memory entries."""
+        memories = []
+        
+        # LoCoMo observations are nested under session keys
+        for session_key, session_obs in observations.items():
+            if isinstance(session_obs, dict):
+                for speaker, speaker_observation in session_obs.items():
+                    for fact_entry in speaker_observation:
+                        if isinstance(fact_entry, list) and len(fact_entry) >= 2:
+                            fact_text, evidence = fact_entry[0], fact_entry[1]
+                            
+                            memory = {
+                                "content": fact_text,
+                                "speaker": speaker,
+                                "evidence": evidence,
+                                "session": session_key,
+                                "memory_type": "episodic",
+                                "source": "conversation_observations",
+                            }
+                            memories.append(memory)
+                            # TODO: examine memory format
+                            # breakpoint()
+        
+        return memories
+    
+    def get_initial_memories_for_sample(self, sample_id: str) -> List[Dict]:
+        """Get initial memories for a sample_id from loaded conversation data."""
+        memories = self._conversation_memories.get(sample_id, [])
+        if not memories:
+            print(f"⚠️ No conversation memories found for sample_id '{sample_id}'")
+        return memories.copy()  # Return a copy to prevent modification
+    
+    def get_conversation_stats(self) -> Dict[str, Any]:
+        """Get statistics about loaded conversations for verification."""
+        return {
+            "total_conversations": len(self._conversation_memories),
+            "sample_ids": list(self._conversation_memories.keys()),
+            "memory_counts": {sid: len(mems) for sid, mems in self._conversation_memories.items()}
+        }
     
     # CPU-only cached embeddings - no complex GPU initialization needed
     
@@ -97,6 +171,8 @@ class MemoryBrokerActor:
     
     async def create_memory_in_store(self, namespace: str, memory_data: dict) -> dict:
         """Create memory directly in Ray Actor store (avoids serialization issues)."""
+        # TODO: validate langmem commands are correct: https://langchain-ai.github.io/langmem/reference/memory/#langmem.create_memory_store_manager
+        
         if namespace not in self._stores:
             store = self._create_store_with_embeddings(namespace)
             self._stores[namespace] = store
@@ -111,10 +187,18 @@ class MemoryBrokerActor:
                 store=store
             )
             
-            result = await langmem_manage.ainvoke(memory_data)
+            # 🔧 CRITICAL FIX: LangMem expects {content, action, id} format, not our dict format
+            langmem_params = {
+                "content": memory_data.get("content", ""),
+                "action": memory_data.get("action", "create")
+            }
+            if "id" in memory_data:
+                langmem_params["id"] = memory_data["id"]
+            
+            result = await langmem_manage.ainvoke(langmem_params)
             
             # Return updated count and result
-            memories = await store.asearch(("memories",), query="", limit=1000)
+            memories = await store.asearch(("memories",), query="", limit=999999)
             return {
                 "result": result,
                 "new_count": len(memories),
@@ -131,6 +215,7 @@ class MemoryBrokerActor:
     
     async def update_memory_in_store(self, namespace: str, memory_data: dict) -> dict:
         """Update memory directly in Ray Actor store."""
+        # TODO: validate langmem commands are correct: https://langchain-ai.github.io/langmem/reference/memory/#langmem.create_memory_store_manager
         if namespace not in self._stores:
             # Create store with embeddings if it doesn't exist (rare case)
             print(f"🔧 Creating new store with embeddings for namespace '{namespace}' during update")
@@ -146,9 +231,17 @@ class MemoryBrokerActor:
                 store=store
             )
             
-            result = await langmem_manage.ainvoke(memory_data)
+            # 🔧 CRITICAL FIX: LangMem expects {content, action, id} format, not our dict format
+            langmem_params = {
+                "content": memory_data.get("content", ""),
+                "action": memory_data.get("action", "update")
+            }
+            if "id" in memory_data:
+                langmem_params["id"] = memory_data["id"]
             
-            memories = await store.asearch(("memories",), query="", limit=1000)
+            result = await langmem_manage.ainvoke(langmem_params)
+            
+            memories = await store.asearch(("memories",), query="", limit=999999)
             return {
                 "result": result,
                 "new_count": len(memories),
@@ -164,26 +257,21 @@ class MemoryBrokerActor:
     
     async def search_memory_in_store(self, namespace: str, query: str, limit: int = 10) -> dict:
         """Search memory directly in Ray Actor store."""
+        # TODO: validate langmem commands are correct: https://langchain-ai.github.io/langmem/reference/memory/#langmem.create_memory_store_manager
         if namespace not in self._stores:
-            print(f"⚠️ Namespace '{namespace}' not found in stores")
-            return {"results": [], "success": False}
+            print(f"⚠️ Namespace '{namespace}' not found in stores - creating empty store for search")
+            # Create an empty store so search can work (even if it returns no results)
+            store = self._create_store_with_embeddings(namespace)
+            self._stores[namespace] = store
+            # Return empty results since store is new
+            return {"results": [], "success": True}
         
         store = self._stores[namespace]
         
         try:
-            # Debug: Check if store has embeddings configured
             has_embeddings = hasattr(store, 'index_config') and store.index_config is not None
-            if has_embeddings:
-                print(f"🔍 Semantic search for '{query}' in namespace '{namespace}' (embeddings enabled)")
-            else:
-                print(f"⚠️ Keyword search for '{query}' in namespace '{namespace}' (no embeddings)")
-            
-            # Perform search - this will use semantic search if embeddings are configured
             memories = await store.asearch(("memories",), query=query, limit=limit)
-            
-            # Debug: Log search results
-            print(f"  → Found {len(memories)} results, 1st result={memories[0].value.get('content', '')}")
-            
+
             results = []
             for mem in memories:
                 results.append({
@@ -191,10 +279,12 @@ class MemoryBrokerActor:
                     "content": mem.value.get("content", ""),
                     "metadata": mem.value.get("metadata", {}),
                 })
+            # TODO: breakpoint to see outcome of search
+            # breakpoint()
             
             return {
                 "results": results,
-                "total_count": len(await store.asearch(("memories",), query="", limit=1000)),
+                "total_count": len(await store.asearch(("memories",), query="", limit=999999)),
                 "success": True,
                 "semantic_search": has_embeddings
             }
@@ -208,24 +298,44 @@ class MemoryBrokerActor:
                 "success": False
             }
     
-    async def init_conversation_memory(self, namespace: str, initial_memories: List[Dict]) -> str:
-        """Initialize memory for a conversation (called per batch item)."""
-        # 🔧 CRITICAL FIX: Don't reinitialize if store already exists (prevents overwriting tool changes)
-        if namespace in self._stores:
-            existing_count = len(await self.get_final_memories_for_reward(namespace))
-            initial_count = len(initial_memories)
-            print(f"🔄 Store already exists for namespace {namespace} with {existing_count} memories (vs {initial_count} initial), skipping reinitialization to preserve tool changes")
-            return namespace
-            
-        print(f"🆕 Creating NEW store for namespace {namespace} with {len(initial_memories)} initial memories")
+    async def ensure_store_initialized(self, namespace: str, sample_id: str) -> bool:
+        """Ensure store is initialized for namespace, but only if it doesn't exist.
         
-        # 🔧 FIX: Use shared helper method for consistent store creation
+        This is idempotent - won't re-initialize if store already exists.
+        Used by tools during execute() to handle cases where they're called first.
+        
+        Returns:
+            True if initialized now, False if already existed
+        """
+        if namespace not in self._stores:
+            print(f"🚀 [Broker] Initializing store for namespace '{namespace}' from sample '{sample_id}' (first tool execution)")
+            await self.init_conversation_memory_from_sample(namespace, sample_id)
+            return True
+        else:
+            # Store already exists, no need to initialize
+            print(f"⛔️ (shouldn't happen) Store for namespace '{namespace}' already exists, skipping initialization")
+            return False
+    
+    async def init_conversation_memory_from_sample(self, namespace: str, sample_id: str) -> str:
+        """Initialize memory for a conversation using sample_id (called per batch item).
+        
+        Args:
+            namespace: Unique namespace for this trajectory (e.g., "conv-48-qa2-abc123")
+            sample_id: Conversation identifier to load initial memories from (e.g., "conv-48")
+        """
+        # Get initial memories from loaded conversation data
+        initial_memories = self.get_initial_memories_for_sample(sample_id)    
+        
+        # Create store with embeddings
         store = self._create_store_with_embeddings(namespace)
-            
         self._stores[namespace] = store
-        self._initial_memories[namespace] = initial_memories.copy()
         
-        # Simple store population - InMemoryStore will handle embeddings via IndexConfig
+        # Store the sample_id -> namespace mapping for later retrieval
+        # This allows reward manager to get initial memories using sample_id
+        # Note: We don't store initial_memories per namespace anymore, just reference the sample_id
+        
+        # Populate store with initial memories
+        # TODO: check what this is doing
         for i, memory in enumerate(initial_memories):
             memory_id = memory.get('id', f"init_mem_{i}")
             content = memory.get('content', '')
@@ -238,23 +348,28 @@ class MemoryBrokerActor:
             except ValueError:
                 langmem_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
             
-            await store.aput(
-                namespace=("memories",),
-                key=langmem_id,
-                value={
-                    "content": content,
-                    "metadata": metadata,
-                    "id": langmem_id
-                }
-            )
+            try:
+                await store.aput(
+                    namespace=("memories",),
+                    key=langmem_id,
+                    value={
+                        "content": content,
+                        "metadata": metadata,
+                        "id": langmem_id
+                    }
+                )
+            except Exception as e:
+                print(f"❌ Failed to add initial memory {memory_id}: {e}")
+            # TODO: debug memory store, what's in there in what format
+            # breakpoint()
         
-        self._memory_cache[namespace] = initial_memories.copy()
         return namespace
-    
+
     async def get_final_memories_for_reward(self, namespace: str) -> List[Dict]:
         """Get final memory state for reward computation (called on reward workers)."""
         if namespace not in self._stores:
-            print(f"⚠️  No memories found for namespace {namespace}")
+            print(f"⚠️  Namespace '{namespace}' not found - creating store (likely called during tool initialization)")
+            # Return empty list if namespace was never created yet
             return []
         
         store = self._stores[namespace]
@@ -264,7 +379,7 @@ class MemoryBrokerActor:
             memories = await store.asearch(
                 ("memories",),  # namespace_prefix as positional argument
                 query="",  # Empty query returns all memories
-                limit=1000  # High limit to get all memories
+                limit=999999  # High limit to get all memories
             )
         
             
@@ -284,19 +399,11 @@ class MemoryBrokerActor:
             
         except Exception as e:
             print(f"❌ CRITICAL: Error querying memories for {namespace}: {type(e).__name__}: {e}")
-            print(f"❌ FALLBACK: Using initial memories ({len(self._initial_memories.get(namespace, []))}) instead of actual store contents")
-            # Fallback to initial memories
-            return self._initial_memories.get(namespace, [])
     
     async def cleanup_conversation(self, namespace: str):
         """Clean up memory for a conversation after episode completion."""
         if namespace in self._stores:
             del self._stores[namespace]
-        if namespace in self._initial_memories:
-            del self._initial_memories[namespace]
-        if namespace in self._memory_cache:
-            del self._memory_cache[namespace]
-        print(f"🧹 Cleaned up memory for namespace: {namespace}")
 
 
 class MemoryStoreManager:
@@ -351,12 +458,18 @@ class MemoryStoreManager:
         """Get InMemoryStore for namespace (used by tools on rollout workers)."""
         broker = cls.get_broker_actor()
         return ray.get(broker.get_store_for_tools.remote(namespace))
-
+    
     @classmethod
-    def init_store_with_memories(cls, namespace: str, initial_memories: List[Dict]):
-        """Initialize store with memories (called once per batch item)."""
+    def get_initial_memories_for_sample(cls, sample_id: str) -> List[Dict]:
+        """Get initial memories for a sample_id from the broker."""
         broker = cls.get_broker_actor()
-        ray.get(broker.init_conversation_memory.remote(namespace, initial_memories))
+        return ray.get(broker.get_initial_memories_for_sample.remote(sample_id))
+    
+    @classmethod
+    def get_conversation_stats(cls) -> Dict[str, Any]:
+        """Get conversation statistics from the broker."""
+        broker = cls.get_broker_actor()
+        return ray.get(broker.get_conversation_stats.remote())
 
     @classmethod
     def get_current_memories(cls, namespace: str) -> List[Dict]:
@@ -396,6 +509,12 @@ class MemoryStoreManager:
         if namespace != instance_id:
             print(f"🔄 Using mapped namespace '{namespace}' for instance '{instance_id}'")
         return namespace
+    
+    @classmethod
+    def ensure_store_initialized(cls, namespace: str, sample_id: str) -> bool:
+        """Ensure store is initialized, but only if it doesn't exist (idempotent)."""
+        broker = cls.get_broker_actor()
+        return ray.get(broker.ensure_store_initialized.remote(namespace, sample_id))
     
     @classmethod
     def cleanup_conversation(cls, namespace: str):

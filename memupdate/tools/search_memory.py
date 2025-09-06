@@ -49,7 +49,7 @@ class SearchMemoryTool(BaseTool):
     """Memory search tool that wraps LangMem search functionality."""
 
     def __init__(self, config: dict, tool_schema: Optional[OpenAIFunctionToolSchema] = None):
-        _debug_log("🔧 Initializing SearchMemoryTool...")
+        # _debug_log("🔧 Initializing SearchMemoryTool...")
         
         if tool_schema is None:
             tool_schema = self.get_openai_tool_schema()
@@ -59,11 +59,14 @@ class SearchMemoryTool(BaseTool):
         from .base_memory_tool import MemoryStoreManager
         self.store_manager = MemoryStoreManager
         
+        # Store sample_id per instance for execution-time initialization
+        self._instance_sample_ids = {}  # instance_id -> sample_id
+        
         # Initialize LangMem components
         self.langmem_search = None
         self._init_langmem()
         
-        _debug_log(f"✅ SearchMemoryTool initialized (LangMem available: {self.langmem_search is not None})")
+        # _debug_log(f"✅ SearchMemoryTool initialized (LangMem available: {self.langmem_search is not None})")
 
     def _init_langmem(self):
         """Initialize LangMem components."""
@@ -123,42 +126,33 @@ class SearchMemoryTool(BaseTool):
         )
 
     async def create(self, instance_id: Optional[str] = None, **kwargs) -> tuple[str, ToolResponse]:
-        """Create a search tool instance with initial memory loading."""
+        """Create a search tool instance."""
         from uuid import uuid4
         if instance_id is None:
             instance_id = str(uuid4())
         
-        # Initialize memory store with initial memories if provided
-        initial_memories = kwargs.get('initial_memories', [])
-        namespace = kwargs.get('namespace', instance_id)
-        
-        
-        # Check if there's a create_kwargs that contains the actual namespace and initial_memories
+        # Extract namespace and sample_id from create_kwargs
         create_kwargs = kwargs.get('create_kwargs', {})
-        if 'namespace' in create_kwargs:
-            actual_namespace = create_kwargs['namespace']
-            namespace = actual_namespace
-            
-        # 🔧 CRITICAL FIX: Also check for initial_memories in create_kwargs
-        if 'initial_memories' in create_kwargs:
-            actual_initial_memories = create_kwargs['initial_memories']
-            initial_memories = actual_initial_memories
+        namespace = create_kwargs.get('namespace', instance_id)
+        sample_id = create_kwargs.get('sample_id')
         
-        # 🔧 CRITICAL FIX: Register the mapping from instance_id to intended namespace
+        # Store sample_id for this instance (needed during execute)
+        if sample_id:
+            self._instance_sample_ids[instance_id] = sample_id
+        
+        # Register the mapping from instance_id to intended namespace if different
         if namespace != instance_id:
             self.store_manager.register_instance_namespace(instance_id, namespace)
         
-        if initial_memories:
-            self.store_manager.init_store_with_memories(namespace, initial_memories)
-            return instance_id, ToolResponse(text=f"Memory search tool initialized with {len(initial_memories)} memories in namespace '{namespace}'")
-        else:
-            self.store_manager.get_or_create_store(namespace)  # Ensure store exists
-            return instance_id, ToolResponse(text=f"Memory search tool initialized with empty store in namespace '{namespace}'")
+        # Don't initialize store here - will be done during execute() if needed
+        return instance_id, ToolResponse(text=f"Memory search tool ready for namespace '{namespace}'")
 
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         """Execute memory search operation."""
-        _debug_log(f"🔍 SearchMemoryTool.execute called with query: {parameters.get('query', 'N/A')}")
+        # _debug_log(f"🔍 SearchMemoryTool.execute called with query: {parameters.get('query', 'N/A')}")
         try:
+            # MEMUPDATE: Execution-time initialization if needed
+            # This ensures memory is ready even if search_memory is called first
             
             # Get namespace from kwargs
             namespace = kwargs.get("namespace", instance_id)
@@ -177,7 +171,7 @@ class SearchMemoryTool(BaseTool):
             memory_type = parameters.get("memory_type", None)
             threshold = parameters.get("threshold", 0.0)
             
-            _debug_log(f"🔍 SearchMemoryTool.execute called with namespace='{namespace}', query='{query}'")
+            # _debug_log(f"🔍 SearchMemoryTool.execute called with namespace='{namespace}', query='{query}'")
 
             if not query:
                 return ToolResponse(text="Error: Query is required for memory search"), 0.0, {}
@@ -187,6 +181,13 @@ class SearchMemoryTool(BaseTool):
             
             if create_search_memory_tool is not None and InMemoryStore is not None:
                 try:
+                    # Now perform the search
+                    print(f"In search_memory.py calling get_current_memories with namespace: {namespace}")
+                    current_memories = self.store_manager.get_current_memories(namespace)
+                    if not current_memories:
+                        # Store is empty even after initialization attempt
+                        print(f"⚠️ Store empty for {namespace}, this suggests manage_memory tool wasn't initialized first")
+                    
                     # Use Ray Actor method directly
                     result = self.store_manager.search_memory_via_actor(namespace, query, top_k)
                     
@@ -243,12 +244,6 @@ class SearchMemoryTool(BaseTool):
         
         # 🔧 CRITICAL FIX: Use mapped namespace if available
         namespace = self.store_manager.get_namespace_for_instance(namespace)
-        
-        _debug_log(f"🧹 SearchMemoryTool.release called for namespace '{namespace}' (memory preserved)")
-        
-        # Just log current memory state for debugging
-        current_memories = self.store_manager.get_current_memories(namespace)
-        _debug_log(f"📊 Memory state at release: {len(current_memories)} memories in '{namespace}'")
         
         # Return success (no actual cleanup needed since MemoryStoreManager handles persistence)
         return f"Released SearchMemoryTool instance for namespace '{namespace}'"

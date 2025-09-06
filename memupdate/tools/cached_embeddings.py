@@ -75,9 +75,6 @@ class HybridCachedEmbeddings(Embeddings):
         for idx, i in enumerate(uncached_indices):
             results[i] = uncached_embeddings[idx]
         
-        # cache_hits = len(cached_results)
-        # print(f"⚡ HYBRID EMBEDDINGS: {cache_hits}/{len(texts)} cache hits ({cache_hits/len(texts)*100:.1f}%)")
-        
         return results
     
     def embed_query(self, text: str) -> List[float]:

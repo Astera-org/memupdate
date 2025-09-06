@@ -28,6 +28,9 @@ class SampleMemoryTool(BaseTool):
         # Use shared memory store manager
         from .base_memory_tool import MemoryStoreManager
         self.store_manager = MemoryStoreManager
+        
+        # Store sample_id per instance for execution-time initialization
+        self._instance_sample_ids = {}  # instance_id -> sample_id
 
     def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
         """Return the OpenAI tool schema for memory sampling."""
@@ -64,29 +67,21 @@ class SampleMemoryTool(BaseTool):
         if instance_id is None:
             instance_id = str(uuid4())
         
-        # Initialize memory store with initial memories if provided
-        initial_memories = kwargs.get('initial_memories', [])
-        namespace = kwargs.get('namespace', instance_id)
-        
-        print(f"📊 MEMUPDATE DEBUG: SampleMemoryTool.create called with namespace='{namespace}', instance_id='{instance_id}'")
-        
-        # Check if there's a create_kwargs that contains the actual namespace
+        # Extract namespace and sample_id from create_kwargs
         create_kwargs = kwargs.get('create_kwargs', {})
-        if 'namespace' in create_kwargs:
-            actual_namespace = create_kwargs['namespace']
-            print(f"📊 MEMUPDATE DEBUG: Found actual namespace in create_kwargs: '{actual_namespace}'")
-            namespace = actual_namespace
+        namespace = create_kwargs.get('namespace', instance_id)
+        sample_id = create_kwargs.get('sample_id')
         
-        # 🔧 CRITICAL FIX: Register the mapping from instance_id to intended namespace
+        # Store sample_id for this instance (needed during execute)
+        if sample_id:
+            self._instance_sample_ids[instance_id] = sample_id
+        
+        # Register the mapping from instance_id to intended namespace if different
         if namespace != instance_id:
             self.store_manager.register_instance_namespace(instance_id, namespace)
         
-        if initial_memories:
-            self.store_manager.init_store_with_memories(namespace, initial_memories)
-            return instance_id, ToolResponse(text=f"Memory sample tool initialized with {len(initial_memories)} memories in namespace '{namespace}'")
-        else:
-            self.store_manager.get_or_create_store(namespace)  # Ensure store exists
-            return instance_id, ToolResponse(text=f"Memory sample tool initialized with empty store in namespace '{namespace}'")
+        # Don't initialize store here - will be done during execute() if needed
+        return instance_id, ToolResponse(text=f"Memory sample tool ready for namespace '{namespace}'")
 
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         """Execute memory sampling operation."""
@@ -103,13 +98,16 @@ class SampleMemoryTool(BaseTool):
             
             # 🔧 CRITICAL FIX: Use mapped namespace if available
             namespace = self.store_manager.get_namespace_for_instance(namespace)
-            
+
             # Get actual memories from the store manager
+            print(f"In sample_memory.py calling get_current_memories with namespace: {namespace}")
             current_memories = self.store_manager.get_current_memories(namespace)
             
             # If no memories in cache, return empty results
             if not current_memories:
-                return ToolResponse(text="No memories found in the database"), 0.0, {
+                # This suggests manage_memory tool wasn't created first to initialize the store
+                print(f"⚠️ No memories found in namespace {namespace} - manage_memory tool should be created first")
+                return ToolResponse(text="No memories found in the database - ensure manage_memory tool is initialized first"), 0.0, {
                     "sampled_count": 0,
                     "strategy": strategy,
                     "memory_type_filter": memory_type,
@@ -161,6 +159,4 @@ class SampleMemoryTool(BaseTool):
         # 🔧 CRITICAL FIX: Use mapped namespace if available
         namespace = self.store_manager.get_namespace_for_instance(namespace)
         
-        current_memories = self.store_manager.get_current_memories(namespace)
-        print(f"🧹 SampleMemoryTool.release: {len(current_memories)} memories in '{namespace}' (preserved)")
         return f"Released SampleMemoryTool instance for namespace '{namespace}'"

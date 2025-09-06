@@ -59,6 +59,9 @@ class ManageMemoryTool(BaseTool):
         from .base_memory_tool import MemoryStoreManager
         self.store_manager = MemoryStoreManager
         
+        # Store sample_id per instance for execution-time initialization
+        self._instance_sample_ids = {}  # instance_id -> sample_id
+        
         # Initialize LangMem components
         self.langmem_manage = None
         self._init_langmem()
@@ -97,8 +100,8 @@ class ManageMemoryTool(BaseTool):
                     properties={
                         "operation": OpenAIFunctionPropertySchema(
                             type="string",
-                            description="Type of operation: create, update, or analyze",
-                            enum=["create", "update", "analyze"]
+                            description="Type of operation: create or update",
+                            enum=["create", "update"]
                         ),
                         "content": OpenAIFunctionPropertySchema(
                             type="string",
@@ -128,42 +131,26 @@ class ManageMemoryTool(BaseTool):
         )
 
     async def create(self, instance_id: Optional[str] = None, **kwargs) -> tuple[str, ToolResponse]:
-        """Create a manage tool instance with initial memory loading."""
+        """Create a manage tool instance."""
         from uuid import uuid4
         if instance_id is None:
             instance_id = str(uuid4())
         
-        # Initialize memory store with initial memories if provided
-        initial_memories = kwargs.get('initial_memories', [])
-        namespace = kwargs.get('namespace', instance_id)
-        
-        print(f"🔧 MEMUPDATE DEBUG: ManageMemoryTool.create called with namespace='{namespace}', instance_id='{instance_id}'")
-        
-        # Check if there's a create_kwargs that contains the actual namespace and initial_memories
+        # Extract namespace from create_kwargs
         create_kwargs = kwargs.get('create_kwargs', {})
-        if 'namespace' in create_kwargs:
-            actual_namespace = create_kwargs['namespace']
-            print(f"🔧 MEMUPDATE DEBUG: Found actual namespace in create_kwargs: '{actual_namespace}'")
-            namespace = actual_namespace
-            
-        # 🔧 CRITICAL FIX: Also check for initial_memories in create_kwargs
-        if 'initial_memories' in create_kwargs:
-            actual_initial_memories = create_kwargs['initial_memories']
-            print(f"🔧 MEMUPDATE DEBUG: Found {len(actual_initial_memories)} initial_memories in create_kwargs")
-            initial_memories = actual_initial_memories
+        namespace = create_kwargs.get('namespace', instance_id)
+        sample_id = create_kwargs.get('sample_id')
         
-        print(f"🔧 MEMUPDATE DEBUG: Final values - namespace='{namespace}', initial_memories count={len(initial_memories)}")
+        # Store sample_id for this instance (needed during execute)
+        if sample_id:
+            self._instance_sample_ids[instance_id] = sample_id
         
-        # 🔧 CRITICAL FIX: Register the mapping from instance_id to intended namespace
+        # Register the mapping from instance_id to intended namespace if different
         if namespace != instance_id:
             self.store_manager.register_instance_namespace(instance_id, namespace)
         
-        if initial_memories:
-            self.store_manager.init_store_with_memories(namespace, initial_memories)
-            return instance_id, ToolResponse(text=f"Memory management tool initialized with {len(initial_memories)} memories in namespace '{namespace}'")
-        else:
-            self.store_manager.get_or_create_store(namespace)  # Ensure store exists
-            return instance_id, ToolResponse(text=f"Memory management tool initialized with empty store in namespace '{namespace}'")
+        # Tool creation is now passive - actual memory initialization happens during execute()
+        return instance_id, ToolResponse(text=f"Memory management tool ready for namespace '{namespace}'")
 
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         """Execute memory management operation."""
@@ -183,13 +170,15 @@ class ManageMemoryTool(BaseTool):
             
             # 🔧 CRITICAL FIX: Use mapped namespace if available
             namespace = self.store_manager.get_namespace_for_instance(namespace)
-            
             operation = parameters.get("operation", "create")
             content = parameters.get("content", "")
             memory_type = parameters.get("memory_type", "episodic")
             metadata = parameters.get("metadata", {})
             source = parameters.get("source", "")
             memory_id = parameters.get("memory_id", None)
+            
+            # 🔍 DEBUG: Log the operation being performed
+            print(f"🔧 ManageMemoryTool executing '{operation}' operation with content: {content[:100]}...")
             
             _debug_log(f"📝 MEMUPDATE DEBUG: ManageMemoryTool.execute called with namespace='{namespace}', operation='{operation}'")
 
@@ -200,8 +189,8 @@ class ManageMemoryTool(BaseTool):
             # Getting local store copies via ray.get() creates separate instances!
             
             if operation == "create":
-                print(f"🛠️  DEBUG: About to create memory with content: '{content[:100]}...'")
-                print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
+                # print(f"🛠️  DEBUG: About to create memory with content: '{content[:100]}...'")
+                # print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
                 
                 # Use Ray Actor method directly
                 result = self.store_manager.create_memory_via_actor(namespace, {
@@ -211,8 +200,8 @@ class ManageMemoryTool(BaseTool):
                 })
                 
                 if result["success"]:
-                    print(f"🛠️  DEBUG: Ray Actor create result: {result['result']}")
-                    print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after create operation in namespace '{namespace}'")
+                    # print(f"🛠️  DEBUG: Ray Actor create result: {result['result']}")
+                    # print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after create operation in namespace '{namespace}'")
                     return ToolResponse(
                         text=f"Successfully created {memory_type} memory: {content[:100]}..."
                     ), 0.1, {"operation": operation, "memory_type": memory_type}
@@ -241,53 +230,17 @@ class ManageMemoryTool(BaseTool):
                 })
                 
                 if result["success"]:
-                    print(f"🛠️  DEBUG: Ray Actor update result: {result['result']}")
-                    print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after update operation in namespace '{namespace}'")
+                    # print(f"🛠️  DEBUG: Ray Actor update result: {result['result']}")
+                    # print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after update operation in namespace '{namespace}'")
                     return ToolResponse(
                         text=f"Successfully updated memory {memory_id}: {content[:100]}..."
                     ), 0.1, {"operation": operation, "memory_id": memory_id}
                 else:
                     return ToolResponse(text=f"Failed to update memory: {result['result']}"), 0.0, {}
-                    
-            elif operation == "analyze":
-                print(f"🛠️  DEBUG: About to analyze/create memory with content: '{content[:100]}...'")
-                print(f"🛠️  DEBUG: Memory type: {memory_type}, metadata: {metadata}")
-                
-                # Use Ray Actor method directly
-                result = self.store_manager.create_memory_via_actor(namespace, {
-                    "action": "create",
-                    "content": content,
-                    "metadata": {**metadata, "type": memory_type, "source": source}
-                })
-                
-                if result["success"]:
-                    print(f"🛠️  DEBUG: Ray Actor analyze result: {result['result']}")
-                    print(f"🛠️  DEBUG: Store now contains {result['new_count']} memories after analyze operation in namespace '{namespace}'")
-                    return ToolResponse(
-                        text=f"Analyzed and processed content: {content[:100]}..."
-                    ), 0.1, {"operation": operation, "analysis": "completed"}
-                else:
-                    return ToolResponse(text=f"Failed to analyze memory: {result['result']}"), 0.0, {}
-                    
             else:
-                return ToolResponse(text=f"Error: Unknown operation '{operation}'"), 0.0, {}
-                # Mock implementation when LangMem not available
-                mock_memory_id = f"mock_{hash(content) % 10000}"
-                
-                if operation == "create":
-                    result_text = f"Mock created {memory_type} memory (ID: {mock_memory_id}): {content[:100]}..."
-                elif operation == "update":
-                    result_text = f"Mock updated memory {memory_id or mock_memory_id}: {content[:100]}..."
-                elif operation == "analyze":
-                    result_text = f"Mock analyzed content: {content[:100]}..."
-                else:
-                    result_text = f"Mock {operation} operation completed"
-                
-                return ToolResponse(text=result_text), 0.1, {
-                    "operation": operation,
-                    "memory_id": memory_id or mock_memory_id,
-                    "memory_type": memory_type
-                }
+                # 🚫 Unknown operation - should only be create or update
+                print(f"❌ ERROR: Unknown operation '{operation}' - valid operations are: create or update")
+                return ToolResponse(text=f"Error: Unknown operation '{operation}'. Valid operations: create or update"), 0.0, {}
 
         except Exception as e:
             logger.error(f"Memory management execution failed: {e}")
@@ -304,9 +257,6 @@ class ManageMemoryTool(BaseTool):
         
         _debug_log(f"🧹 ManageMemoryTool.release called for namespace '{namespace}' (memory preserved)")
         
-        # Just log current memory state for debugging
-        current_memories = self.store_manager.get_current_memories(namespace)
-        _debug_log(f"📊 Memory state at release: {len(current_memories)} memories in '{namespace}'")
         
         # Return success (no actual cleanup needed since MemoryStoreManager handles persistence)
         return f"Released ManageMemoryTool instance for namespace '{namespace}'"
