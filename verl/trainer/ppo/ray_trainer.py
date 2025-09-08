@@ -973,6 +973,12 @@ class RayPPOTrainer:
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
+                from memupdate.tools.base_memory_tool import MemoryStoreManager
+
+                conv_stat_result = MemoryStoreManager.get_conversation_stats()
+                for k, v in conv_stat_result.items():
+                    print(f"🔍 [RayTrainer] {k}: {v}")
+
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
