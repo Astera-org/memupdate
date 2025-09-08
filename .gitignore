@@ -153,8 +153,7 @@ ehthumbs.db
 # Data files (too large for git)
 data/locomo/*.parquet
 data/locomo/*.json
-memupdate/data/locomo/*.parquet
-memupdate/data/locomo/*.json
+data/embedding_cache/*.pkl
 
 # Model checkpoints
 checkpoints/
