@@ -37,15 +37,18 @@ MemUpdate is an experimental project that explores self-refining memory in LLMs 
    # Start container with GPU support, CUDA memory sharing permissions, and volume mounting
    # IMPORTANT: The permission flags (--cap-add, --ipc, --security-opt) are REQUIRED
    # to prevent "RuntimeError: pidfd_getfd: Operation not permitted" errors
-   docker run --name verl_container -d --gpus all \
+   docker run --name verl_container -d \
+     --init \
+     --gpus all \
      --cap-add=SYS_PTRACE \
      --ipc=host \
+     --network=host \
+     --privileged \
      --security-opt seccomp=unconfined \
      -v ~/memupdate:/workspace/memupdate \
      -v ~/verl:/workspace/verl \
      -v ~/locomo:/workspace/locomo \
      -v ~/.cache/huggingface/hub:/root/.cache/huggingface/hub \
-     --shm-size=20g \
      verlai/verl:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2 \
      sleep infinity
    ```
@@ -253,19 +256,21 @@ Worker unexpectedly exits with a connection error code 2
 
 **Root Cause**: Docker container lacks permissions for CUDA tensor sharing between processes
 
-**Solution**: Use the complete Docker command with all permission flags:
+**Solution**: Use the complete Docker command with all permission flags AND --init:
 ```bash
 docker run --name verl_container -d --gpus all \
+  --init \
   --cap-add=SYS_PTRACE \
   --ipc=host \
   --security-opt seccomp=unconfined \
   -v /path/to/your/memupdate:/workspace/memupdate \
   -v /path/to/verl:/workspace/verl \
   -v ~/.cache/huggingface/hub:/root/.cache/huggingface/hub \
-  --shm-size=20g \
   verlai/verl:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2 \
   sleep infinity
 ```
+
+**Important**: The `--init` flag is CRITICAL to prevent zombie processes from accumulating.
 
 **Why These Flags Are Needed**:
 - SGLang uses PyTorch multiprocessing to share CUDA tensors between worker processes
