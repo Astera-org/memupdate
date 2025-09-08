@@ -34,14 +34,27 @@ MemUpdate is an experimental project that explores self-refining memory in LLMs 
 
 1. **Start the verl Container**:
    ```bash
-   # Start container with GPU support and volume mounting
+   # Start container with GPU support, CUDA memory sharing permissions, and volume mounting
+   # IMPORTANT: The permission flags (--cap-add, --ipc, --security-opt) are REQUIRED
+   # to prevent "RuntimeError: pidfd_getfd: Operation not permitted" errors
    docker run --name verl_container -d --gpus all \
-     -v /path/to/your/memupdate:/workspace/memupdate \
-     -v /path/to/verl:/workspace/verl \
-     --shm-size=10g \
+     --cap-add=SYS_PTRACE \
+     --ipc=host \
+     --security-opt seccomp=unconfined \
+     -v ~/memupdate:/workspace/memupdate \
+     -v ~/verl:/workspace/verl \
+     -v ~/locomo:/workspace/locomo \
+     -v ~/.cache/huggingface/hub:/root/.cache/huggingface/hub \
+     --shm-size=20g \
      verlai/verl:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2 \
      sleep infinity
    ```
+   
+   **Permission Flags Explained**:
+   - `--cap-add=SYS_PTRACE`: Enables process tracing for CUDA tensor sharing between processes
+   - `--ipc=host`: Shares IPC namespace with host for inter-process communication
+   - `--security-opt seccomp=unconfined`: Allows system calls required for CUDA memory operations
+   - Without these flags, SGLang will crash with permission errors during model weight updates
 
 2. **Install Required Dependencies**:
    ```bash
@@ -62,14 +75,11 @@ MemUpdate is an experimental project that explores self-refining memory in LLMs 
    "
    ```
 
-3. **Apply Required Patches**:
+<!-- 3. **Apply Required Patches**:
    ```bash
-   # Apply data format fix for JSON deserialization
-   docker exec verl_container bash -c "cd /workspace/memupdate && python3 fix_rl_dataset.py"
-   
-   # Apply reward manager registration fix
+   # Apply reward manager registration fix (one time thing for verl so no need to redo)
    docker exec verl_container bash -c "cd /workspace/memupdate && python3 patch_reward_loading.py"
-   ```
+   ``` -->
 
 ### Running Training
 
@@ -213,6 +223,55 @@ memupdate/
 - **Container stops**: Use `sleep infinity` to keep container running
 - **GPU not accessible**: Ensure `--gpus all` flag is used
 - **Volume mounting**: Check paths are correctly mounted to `/workspace/`
+
+### CUDA Memory Issues
+
+If training hangs after step 1 with:
+```
+[torch_memory_saver.cpp] CUresult error result=2 file=csrc/torch_memory_saver.cpp func=cu_mem_create line=104
+```
+
+**Root Cause**: PyTorch compile workers fragment GPU memory when `gpu_memory_utilization` is too high.
+
+**Solution**: Reduce GPU memory utilization in `run_training_container.sh`:
+```bash
+actor_rollout_ref.rollout.gpu_memory_utilization=0.5  # Instead of 0.7
+```
+
+This leaves sufficient GPU memory for PyTorch's compile workers to operate without fragmentation.
+
+### Critical CUDA Memory Sharing Error
+
+If you see this error:
+```
+RuntimeError: pidfd_getfd: Operation not permitted
+```
+or
+```
+Worker unexpectedly exits with a connection error code 2
+```
+
+**Root Cause**: Docker container lacks permissions for CUDA tensor sharing between processes
+
+**Solution**: Use the complete Docker command with all permission flags:
+```bash
+docker run --name verl_container -d --gpus all \
+  --cap-add=SYS_PTRACE \
+  --ipc=host \
+  --security-opt seccomp=unconfined \
+  -v /path/to/your/memupdate:/workspace/memupdate \
+  -v /path/to/verl:/workspace/verl \
+  -v ~/.cache/huggingface/hub:/root/.cache/huggingface/hub \
+  --shm-size=20g \
+  verlai/verl:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2 \
+  sleep infinity
+```
+
+**Why These Flags Are Needed**:
+- SGLang uses PyTorch multiprocessing to share CUDA tensors between worker processes
+- This requires Linux capabilities that Docker restricts by default
+- Without proper permissions, processes crash when trying to share GPU memory
+- This is NOT a memory exhaustion issue - it's a permissions issue
 
 ## 🔧 **Technical Details**
 

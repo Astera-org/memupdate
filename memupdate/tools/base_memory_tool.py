@@ -47,11 +47,20 @@ class MemoryBrokerActor:
         """Load cached embeddings to CPU memory."""
         try:
             import pickle
+            import numpy as np
             
             cache_file = "/workspace/memupdate/data/embedding_cache/memory_embeddings.pkl"
             
             with open(cache_file, 'rb') as f:
                 self._embedding_cache = pickle.load(f)
+            
+            # Validate embeddings
+            for key, embedding in self._embedding_cache.items():
+                if isinstance(embedding, np.ndarray):
+                    norm = np.linalg.norm(embedding)
+                    if norm == 0 or np.isnan(norm):
+                        print(f"⚠️ Bad embedding for key {key}: norm={norm}")
+                        self._embedding_cache[key] = np.random.randn(1024) * 0.01
             
             print(f"💾 Loaded {len(self._embedding_cache)} cached embeddings to CPU")
                 
@@ -126,10 +135,21 @@ class MemoryBrokerActor:
     
     def get_conversation_stats(self) -> Dict[str, Any]:
         """Get statistics about loaded conversations for verification."""
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            mem_info = process.memory_info()
+            memory_mb = mem_info.rss / 1024 / 1024
+        except:
+            memory_mb = 0
+            
         return {
             "total_conversations": len(self._conversation_memories),
             "sample_ids": list(self._conversation_memories.keys()),
-            "memory_counts": {sid: len(mems) for sid, mems in self._conversation_memories.items()}
+            "memory_counts": {sid: len(mems) for sid, mems in self._conversation_memories.items()},
+            "active_stores": len(self._stores),
+            "memory_usage_mb": memory_mb,
+            "store_namespaces": list(self._stores.keys())[:10]  # Show first 10 to avoid huge output
         }
     
     # CPU-only cached embeddings - no complex GPU initialization needed
@@ -165,8 +185,10 @@ class MemoryBrokerActor:
             # 🔧 CRITICAL FIX: Create stores with embeddings from the start
             store = self._create_store_with_embeddings(namespace)
             self._stores[namespace] = store
+            print(f"📝 Created new store for namespace: {namespace} (active stores: {len(self._stores)})")
         else:
-            print(f"🔄 Using existing InMemoryStore for namespace: {namespace}")
+            print(f"🔄 Using existing InMemoryStore for namespace: {namespace} (active stores: {len(self._stores)})")
+        
         return self._stores[namespace]
     
     async def create_memory_in_store(self, namespace: str, memory_data: dict) -> dict:
@@ -403,7 +425,15 @@ class MemoryBrokerActor:
     async def cleanup_conversation(self, namespace: str):
         """Clean up memory for a conversation after episode completion."""
         if namespace in self._stores:
+            # Simple cleanup - the original approach
             del self._stores[namespace]
+            
+            # Force garbage collection to help with memory cleanup
+            import gc
+            gc.collect()
+            
+            # Optional: log for monitoring
+            print(f"🧹 Cleaned up namespace '{namespace}' (remaining stores: {len(self._stores)})")
 
 
 class MemoryStoreManager:
