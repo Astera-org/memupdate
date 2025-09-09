@@ -29,7 +29,7 @@ class MemoryBrokerActor:
     """
     
     def __init__(self):
-        # namespace/conversation_id -> InMemoryStore instance
+        # namespace -> InMemoryStore instance
         self._stores: Dict[str, InMemoryStore] = {}
         
         # Centralized storage for conversation memories by sample_id
@@ -126,7 +126,7 @@ class MemoryBrokerActor:
         
         return memories
     
-    def get_initial_memories_for_sample(self, sample_id: str) -> List[Dict]:
+    def get_initial_memories(self, sample_id: str) -> List[Dict]:
         """Get initial memories for a sample_id from loaded conversation data."""
         memories = self._conversation_memories.get(sample_id, [])
         if not memories:
@@ -320,25 +320,8 @@ class MemoryBrokerActor:
                 "success": False
             }
     
-    async def ensure_store_initialized(self, namespace: str, sample_id: str) -> bool:
-        """Ensure store is initialized for namespace, but only if it doesn't exist.
-        
-        This is idempotent - won't re-initialize if store already exists.
-        Used by tools during execute() to handle cases where they're called first.
-        
-        Returns:
-            True if initialized now, False if already existed
-        """
-        if namespace not in self._stores:
-            print(f"🚀 [Broker] Initializing store for namespace '{namespace}' from sample '{sample_id}' (first tool execution)")
-            await self.init_conversation_memory_from_sample(namespace, sample_id)
-            return True
-        else:
-            # Store already exists, no need to initialize
-            print(f"⛔️ (shouldn't happen) Store for namespace '{namespace}' already exists, skipping initialization")
-            return False
     
-    async def init_conversation_memory_from_sample(self, namespace: str, sample_id: str) -> str:
+    async def init_conversation_memory(self, namespace: str, sample_id: str) -> str:
         """Initialize memory for a conversation using sample_id (called per batch item).
         
         Args:
@@ -346,7 +329,7 @@ class MemoryBrokerActor:
             sample_id: Conversation identifier to load initial memories from (e.g., "conv-48")
         """
         # Get initial memories from loaded conversation data
-        initial_memories = self.get_initial_memories_for_sample(sample_id)    
+        initial_memories = self.get_initial_memories(sample_id)    
         
         # Create store with embeddings
         store = self._create_store_with_embeddings(namespace)
@@ -431,9 +414,6 @@ class MemoryBrokerActor:
             # Force garbage collection to help with memory cleanup
             import gc
             gc.collect()
-            
-            # Optional: log for monitoring
-            print(f"🧹 Cleaned up namespace '{namespace}' (remaining stores: {len(self._stores)})")
 
 
 class MemoryStoreManager:
@@ -459,8 +439,6 @@ class MemoryStoreManager:
                 
                 # Check if actor already exists in Ray cluster
                 cls._broker_actor = ray.get_actor("memory_broker")
-                print(f"📡 Connected to existing MemoryBrokerActor from process {os.getpid()}")
-                print(f"ℹ️  NOTE: If you see IndexConfig warnings, restart training to pick up code changes")
                 
             except ValueError:
                 # Actor doesn't exist, create it
@@ -490,10 +468,10 @@ class MemoryStoreManager:
         return ray.get(broker.get_store_for_tools.remote(namespace))
     
     @classmethod
-    def get_initial_memories_for_sample(cls, sample_id: str) -> List[Dict]:
+    def get_initial_memories(cls, sample_id: str) -> List[Dict]:
         """Get initial memories for a sample_id from the broker."""
         broker = cls.get_broker_actor()
-        return ray.get(broker.get_initial_memories_for_sample.remote(sample_id))
+        return ray.get(broker.get_initial_memories.remote(sample_id))
     
     @classmethod
     def get_conversation_stats(cls) -> Dict[str, Any]:
@@ -525,26 +503,22 @@ class MemoryStoreManager:
         broker = cls.get_broker_actor()
         return ray.get(broker.search_memory_in_store.remote(namespace, query, limit))
 
-
     @classmethod
     def register_instance_namespace(cls, instance_id: str, namespace: str):
         """Register mapping from instance_id (request_id) to conversation namespace."""
         cls._instance_to_namespace[instance_id] = namespace
-        print(f"🔗 Mapped instance '{instance_id}' -> namespace '{namespace}' in process {os.getpid()}")
     
     @classmethod
     def get_namespace_for_instance(cls, instance_id: str) -> str:
         """Get namespace for instance_id (request_id)."""
         namespace = cls._instance_to_namespace.get(instance_id, instance_id)
-        if namespace != instance_id:
-            print(f"🔄 Using mapped namespace '{namespace}' for instance '{instance_id}'")
         return namespace
     
     @classmethod
-    def ensure_store_initialized(cls, namespace: str, sample_id: str) -> bool:
+    def init_conversation_memory(cls, namespace: str, sample_id: str) -> bool:
         """Ensure store is initialized, but only if it doesn't exist (idempotent)."""
         broker = cls.get_broker_actor()
-        return ray.get(broker.ensure_store_initialized.remote(namespace, sample_id))
+        return ray.get(broker.init_conversation_memory.remote(namespace, sample_id))
     
     @classmethod
     def cleanup_conversation(cls, namespace: str):

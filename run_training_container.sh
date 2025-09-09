@@ -79,7 +79,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=-1 \
-    trainer.total_training_steps=2 \
+    trainer.total_training_steps=1 \
     actor_rollout_ref.rollout.multi_turn.enable=True \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=2 \
     actor_rollout_ref.rollout.multi_turn.use_inference_chat_template=True \

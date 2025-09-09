@@ -120,53 +120,45 @@ Update the memory database to ensure this question can be answered correctly."""
                                 "sample_id": trial["sample_id"],  # e.g., "conv-48"
                                 "namespace": trial["trajectory_id"],  # e.g., "conv-48-qa2-abc123"
                             },
-                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
-                            "calc_reward_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "manage_memory": {
                             "create_kwargs": {
                                 "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
-                            "calc_reward_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "delete_memory": {
                             "create_kwargs": {
                                 "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "sample_memory": {
                             "create_kwargs": {
                                 "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "merge_memory": {
                             "create_kwargs": {
                                 "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                         "split_memory": {
                             "create_kwargs": {
                                 "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
                             },
-                            "execute_kwargs": {"namespace": trial["trajectory_id"]},
                         },
                     },
                     # Data for reward computation
                     "target_question": trial["question"],
                     "target_answer": trial["answer"],
-                    "conversation_id": trial["trajectory_id"],  # Use unique trajectory ID for reward isolation
+                    "namespace": trial["trajectory_id"],
                     "evidence": trial.get("evidence", []),
                     "category": trial.get("category", 0),
-                    "original_sample_id": trial["sample_id"],
+                    "sample_id": trial["sample_id"],
                 },
             }
             training_data.append(record)

@@ -100,7 +100,6 @@ class SampleMemoryTool(BaseTool):
             namespace = self.store_manager.get_namespace_for_instance(namespace)
 
             # Get actual memories from the store manager
-            print(f"In sample_memory.py calling get_current_memories with namespace: {namespace}")
             current_memories = self.store_manager.get_current_memories(namespace)
             
             # If no memories in cache, return empty results

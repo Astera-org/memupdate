@@ -73,10 +73,10 @@ class MemoryRewardManager(AbstractRewardManager):
                 
                 # Get memory states (set by tools during episode)
                 # 🔧 NEW: Get initial memories from broker using sample_id
-                sample_id = extra_info.get("original_sample_id")  # e.g., "conv-48"
+                sample_id = extra_info.get("sample_id")  # e.g., "conv-48"
                 if sample_id:
                     from memupdate.tools.base_memory_tool import MemoryStoreManager
-                    initial_memories = MemoryStoreManager.get_initial_memories_for_sample(sample_id)
+                    initial_memories = MemoryStoreManager.get_initial_memories(sample_id)
                 else:
                     print(f"⚠️ No sample_id found in extra_info, using empty initial memories")
                     initial_memories = []
@@ -86,7 +86,7 @@ class MemoryRewardManager(AbstractRewardManager):
                 
                 # 🔧 CRITICAL FIX: Read final memories from tool state, not extra_info
                 # extra_info["final_memories"] is never updated by verl's agent loop
-                raw_namespace = extra_info.get("conversation_id")
+                raw_namespace = extra_info.get("namespace")
                 
                 # 🔧 CRITICAL FIX: Use same namespace mapping as tools to ensure consistency
                 from memupdate.tools.base_memory_tool import MemoryStoreManager
@@ -95,13 +95,12 @@ class MemoryRewardManager(AbstractRewardManager):
                 if namespace:
                     try:
                         from memupdate.tools.base_memory_tool import MemoryStoreManager
-                        print(f"In memory_reward.py calling get_current_memories with namespace: {namespace}")
                         final_memories = MemoryStoreManager.get_current_memories(namespace)
                     except Exception as e:
                         print(f"Failed to get final memories from MemoryStoreManager: {e}")
                         final_memories = initial_memories  # Fallback
                 else:
-                    print("No conversation_id in extra_info, using initial_memories as final_memories")
+                    print("No namespace in extra_info, using initial_memories as final_memories")
                     final_memories = initial_memories
                 
                 # Compute reward for this episode
@@ -119,7 +118,6 @@ class MemoryRewardManager(AbstractRewardManager):
                 if namespace:
                     from memupdate.tools.base_memory_tool import MemoryStoreManager
                     MemoryStoreManager.cleanup_conversation(namespace)
-                    print(f"🧹 In memory_reward.py, Cleaned up memory store for namespace '{namespace}' after reward computation")
 
                 # Decode response for validation length
                 response_ids = data_item.batch["responses"]
@@ -193,8 +191,6 @@ class MemoryRewardManager(AbstractRewardManager):
         2. Evaluate QA performance with new memory  
         3. Reward = performance_delta × memory_efficiency
         """
-        print(f"🔍 Computing reward for single QA with old memory: {len(memory_old)} memories, new memory: {len(memory_new)} memories")
-        print(f"### diff in memory count: {len(memory_new) - len(memory_old)}")
         try:
             # 1. Compute QA performance difference
             performance_old = self.evaluate_single_qa(memory_old, target_question, target_answer, namespace)
@@ -296,7 +292,6 @@ class MemoryRewardManager(AbstractRewardManager):
                 
                 if result["success"] and result["results"]:
                     semantic_memories = result["results"]
-                    print(f"✅ Semantic search found {len(semantic_memories)} relevant memories -> first memory: {semantic_memories[0]['content']}")
                     return semantic_memories
                 else:
                     print(f"⚠️ Semantic search failed, falling back to keyword matching, result success={result['success']}, result results={result['results']}")

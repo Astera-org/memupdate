@@ -182,7 +182,6 @@ class SearchMemoryTool(BaseTool):
             if create_search_memory_tool is not None and InMemoryStore is not None:
                 try:
                     # Now perform the search
-                    print(f"In search_memory.py calling get_current_memories with namespace: {namespace}")
                     current_memories = self.store_manager.get_current_memories(namespace)
                     if not current_memories:
                         # Store is empty even after initialization attempt

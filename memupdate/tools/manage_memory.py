@@ -49,7 +49,7 @@ class ManageMemoryTool(BaseTool):
     """Memory management tool that wraps LangMem management functionality."""
 
     def __init__(self, config: dict, tool_schema: Optional[OpenAIFunctionToolSchema] = None):
-        _debug_log("🔧 Initializing ManageMemoryTool...")
+        # _debug_log("🔧 Initializing ManageMemoryTool...")
         
         if tool_schema is None:
             tool_schema = self.get_openai_tool_schema()
@@ -66,7 +66,7 @@ class ManageMemoryTool(BaseTool):
         self.langmem_manage = None
         self._init_langmem()
         
-        _debug_log(f"✅ ManageMemoryTool initialized (LangMem available: {self.langmem_manage is not None})")
+        # _debug_log(f"✅ ManageMemoryTool initialized (LangMem available: {self.langmem_manage is not None})")
 
     def _init_langmem(self):
         """Initialize LangMem components."""
@@ -154,9 +154,9 @@ class ManageMemoryTool(BaseTool):
 
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         """Execute memory management operation."""
-        _debug_log(f"🛠️  ManageMemoryTool.execute called with operation: {parameters.get('operation', 'N/A')}")
+        # _debug_log(f"🛠️  ManageMemoryTool.execute called with operation: {parameters.get('operation', 'N/A')}")
         try:
-            print(f"🛠️  MEMUPDATE DEBUG: ManageMemoryTool.execute kwargs: {kwargs}")
+            # print(f"🛠️  MEMUPDATE DEBUG: ManageMemoryTool.execute kwargs: {kwargs}")
             
             # Get namespace from kwargs
             namespace = kwargs.get("namespace", instance_id)
@@ -178,9 +178,7 @@ class ManageMemoryTool(BaseTool):
             memory_id = parameters.get("memory_id", None)
             
             # 🔍 DEBUG: Log the operation being performed
-            print(f"🔧 ManageMemoryTool executing '{operation}' operation with content: {content[:100]}...")
-            
-            _debug_log(f"📝 MEMUPDATE DEBUG: ManageMemoryTool.execute called with namespace='{namespace}', operation='{operation}'")
+            # _debug_log(f"📝 MEMUPDATE DEBUG: ManageMemoryTool.execute called with namespace='{namespace}', operation='{operation}',content='{content}'")
 
             if not content:
                 return ToolResponse(text="Error: Content is required for memory management"), 0.0, {}
@@ -253,10 +251,7 @@ class ManageMemoryTool(BaseTool):
         namespace = kwargs.get("namespace", instance_id)
         
         # 🔧 CRITICAL FIX: Use mapped namespace if available
-        namespace = self.store_manager.get_namespace_for_instance(namespace)
-        
-        _debug_log(f"🧹 ManageMemoryTool.release called for namespace '{namespace}' (memory preserved)")
-        
+        namespace = self.store_manager.get_namespace_for_instance(namespace)    
         
         # Return success (no actual cleanup needed since MemoryStoreManager handles persistence)
         return f"Released ManageMemoryTool instance for namespace '{namespace}'"
