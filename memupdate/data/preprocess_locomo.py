@@ -127,25 +127,7 @@ Update the memory database to ensure this question can be answered correctly."""
                                 "namespace": trial["trajectory_id"],
                             },
                         },
-                        "delete_memory": {
-                            "create_kwargs": {
-                                "sample_id": trial["sample_id"],
-                                "namespace": trial["trajectory_id"],
-                            },
-                        },
                         "sample_memory": {
-                            "create_kwargs": {
-                                "sample_id": trial["sample_id"],
-                                "namespace": trial["trajectory_id"],
-                            },
-                        },
-                        "merge_memory": {
-                            "create_kwargs": {
-                                "sample_id": trial["sample_id"],
-                                "namespace": trial["trajectory_id"],
-                            },
-                        },
-                        "split_memory": {
                             "create_kwargs": {
                                 "sample_id": trial["sample_id"],
                                 "namespace": trial["trajectory_id"],
@@ -187,7 +169,7 @@ Update the memory database to ensure this question can be answered correctly."""
 
 Target Question: {target_question}
 
-Your goal is to use the available memory tools (search, manage, delete, sample, merge, split) to improve the memory database so that it can better answer the target question. You have a maximum of 30 tool calls to optimize the memory database.
+Your goal is to use the available memory tools (search, manage, sample) to improve the memory database so that it can better answer the target question. You have a maximum of 30 tool calls to optimize the memory database.
 
 Consider:
 1. Are there redundant memories that should be merged?

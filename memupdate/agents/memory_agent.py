@@ -42,10 +42,7 @@ Current Memory State: {memory_summary}
 Available Tools:
 - search_memory: Search for relevant memories
 - manage_memory: Create or update memories
-- delete_memory: Remove irrelevant memories
 - sample_memory: Sample random memories for analysis
-- merge_memory: Consolidate similar memories
-- split_memory: Break down complex memories
 
 Strategy:
 1. First search for relevant memories
