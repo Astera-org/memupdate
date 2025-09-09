@@ -293,14 +293,6 @@ class RewardManagerWorker:
                     extra_info_array[0].copy() if hasattr(extra_info_array[0], "copy") else dict(extra_info_array[0])
                 )
 
-                # Debug print showing the replacement
-                original_conversation_id = extra_info.get("conversation_id", "NOT_FOUND")
-                print(f"🔄 [AgentLoop->Reward] Replacing conversation_id in DataProto:")
-                print(f"   Original conversation_id: {original_conversation_id}")
-                print(f"   Trial namespace:          {trial_namespace}")
-                if len(trial_namespace.split("-")) == 4:
-                    print("🔄 [AgentLoop->Reward] Breaking point because trial_namespace is 4 parts, which is wrong")
-
                 # Replace conversation_id with trial_namespace
                 extra_info["conversation_id"] = trial_namespace
                 non_tensor_batch["extra_info"] = np.array([extra_info])

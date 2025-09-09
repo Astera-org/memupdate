@@ -95,40 +95,27 @@ class ToolAgentLoop(AgentLoopBase):
             # print(f"🔧 MEMUPDATE DEBUG: Generated prompt: {decode_prompt}")
         response_mask, response_logprobs = [], []
         tools_kwargs = kwargs.get("tools_kwargs", {})
+        extra_info = kwargs.get("extra_info", {})
+        raw_namespace = extra_info.get("namespace", "")
+        sample_id = extra_info.get("sample_id", "")
+        # 🔧 MEMUPDATE: Transform base namespace to trial-specific namespace using request_id
+        trial_namespace = raw_namespace + "-" + request_id[:8]
 
         # 🔧 MEMUPDATE: Create trial-specific namespace and pre-initialize memory store
-        # Transform base namespace to trial-specific namespace using request_id
-        trial_namespace = None
         if tools_kwargs:
-            # First, update all tool namespaces to be trial-specific
             for tool_name, tool_config in tools_kwargs.items():
-                create_kwargs = tool_config.get("create_kwargs", {})
-                base_namespace = create_kwargs.get("namespace")
-                sample_id = create_kwargs.get("sample_id")
+                tool_config["create_kwargs"]["namespace"] = trial_namespace
+        if extra_info:
+            extra_info["namespace"] = trial_namespace
 
-                if base_namespace:
-                    # Create trial-specific namespace
-                    trial_namespace = f"{base_namespace}-{request_id[:8]}"
+        # 🔧 MEMUPDATE: Pre-initialize the store with the trial-specific namespace
+        if trial_namespace and sample_id:
+            try:
+                from memupdate.tools.base_memory_tool import MemoryStoreManager
 
-                    # Debug print showing the transformation
-                    print(f"🔄 [AgentLoop] Namespace transformation for {tool_name}:")
-                    print(f"   Original namespace: {base_namespace}")
-                    print(f"   Trial namespace:    {trial_namespace}")
-
-                    # Update the namespace in tools_kwargs
-                    tool_config["create_kwargs"]["namespace"] = trial_namespace
-
-            # Now pre-initialize the store with the trial-specific namespace
-            if trial_namespace and sample_id:
-                try:
-                    from memupdate.tools.base_memory_tool import MemoryStoreManager
-
-                    MemoryStoreManager.ensure_store_initialized(trial_namespace, sample_id)
-                    print(
-                        f"🚀 [AgentLoop] Pre-initialized memory store for trial namespace '{trial_namespace}' from sample '{sample_id}'"
-                    )
-                except Exception as e:
-                    print(f"⚠️ [AgentLoop] Failed to pre-initialize memory store: {e}")
+                MemoryStoreManager.init_conversation_memory(trial_namespace, sample_id)
+            except Exception as e:
+                print(f"⚠️ [AgentLoop] Failed to pre-initialize memory store: {e}")
 
         user_turns, assistant_turns = 0, 0
         while True:
@@ -254,7 +241,6 @@ class ToolAgentLoop(AgentLoopBase):
         extra_fields = {}
         if trial_namespace:
             extra_fields["trial_namespace"] = trial_namespace
-            print(f"📦 [AgentLoop] Storing trial_namespace in output.extra_fields: {trial_namespace}")
 
         output = AgentLoopOutput(
             prompt_ids=prompt_ids,
