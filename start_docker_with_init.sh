@@ -20,6 +20,7 @@ docker run --name verl_container -d \
   -v /data/users/alan/verl:/workspace/verl \
   -v ~/locomo:/workspace/locomo \
   -v ~/.cache/huggingface/hub:/root/.cache/huggingface/hub \
+  -v ~/.claude/settings.json:~/.claude/settings.json \
   verlai/verl:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2 \
   sleep infinity
 

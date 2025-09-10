@@ -36,15 +36,19 @@ class MemoryBrokerActor:
         # sample_id (e.g., "conv-48") -> initial memories from LoCoMo dataset
         self._conversation_memories: Dict[str, List[Dict]] = {}
         
-        # CPU-only cached embeddings (key: content hash, value: embedding vector)
+        # Cached embeddings (key: content hash, value: embedding with metadata)
         self._embedding_cache = {}
         self._load_embedding_cache()
         self._load_conversation_memories()
         
-        print(f"🏢 MemoryBrokerActor (CPU-only) initialized with {len(self._conversation_memories)} conversations in process {os.getpid()}")
+        # Single shared embedding model for generating new embeddings
+        self._embedding_model = None
+        self._init_embedding_model()
+        
+        print(f"🏢 MemoryBrokerActor initialized with {len(self._conversation_memories)} conversations in process {os.getpid()}")
     
     def _load_embedding_cache(self):
-        """Load cached embeddings to CPU memory."""
+        """Load cached embeddings with metadata."""
         try:
             import pickle
             import numpy as np
@@ -55,14 +59,24 @@ class MemoryBrokerActor:
                 self._embedding_cache = pickle.load(f)
             
             # Validate embeddings
-            for key, embedding in self._embedding_cache.items():
+            for key, value in self._embedding_cache.items():
+                embedding = value.get('embedding')
                 if isinstance(embedding, np.ndarray):
                     norm = np.linalg.norm(embedding)
                     if norm == 0 or np.isnan(norm):
                         print(f"⚠️ Bad embedding for key {key}: norm={norm}")
-                        self._embedding_cache[key] = np.random.randn(1024) * 0.01
+                        value['embedding'] = np.random.randn(1024) * 0.01
             
-            print(f"💾 Loaded {len(self._embedding_cache)} cached embeddings to CPU")
+            # Count embeddings per conversation
+            conv_counts = {}
+            for key, value in self._embedding_cache.items():
+                sid = value.get('sample_id')
+                if sid:
+                    conv_counts[sid] = conv_counts.get(sid, 0) + 1
+            
+            print(f"💾 Loaded {len(self._embedding_cache)} embeddings for {len(conv_counts)} conversations")
+            if conv_counts:
+                print(f"📊 Sample distribution: {list(conv_counts.items())[:3]}...")
                 
         except Exception as e:
             print(f"⚠️ Failed to load embedding cache: {e}")
@@ -126,6 +140,19 @@ class MemoryBrokerActor:
         
         return memories
     
+    def _init_embedding_model(self):
+        """Initialize shared embedding model for generating new embeddings."""
+        try:
+            from memupdate.data.qwen_embeddings import QwenEmbeddings
+            
+            # Load once and share across all samples
+            self._embedding_model = QwenEmbeddings()
+            print(f"🚀 Loaded shared embedding model in MemoryBrokerActor")
+                
+        except Exception as e:
+            print(f"⚠️ Failed to initialize shared embedding model: {e}")
+            self._embedding_model = None
+    
     def get_initial_memories(self, sample_id: str) -> List[Dict]:
         """Get initial memories for a sample_id from loaded conversation data."""
         memories = self._conversation_memories.get(sample_id, [])
@@ -152,15 +179,35 @@ class MemoryBrokerActor:
             "store_namespaces": list(self._stores.keys())[:10]  # Show first 10 to avoid huge output
         }
     
-    # CPU-only cached embeddings - no complex GPU initialization needed
+    def _get_sample_id_from_namespace(self, namespace: str) -> str:
+        """Extract sample_id from namespace (e.g., 'conv-48-qa2-abc123' -> 'conv-48')."""
+        if '-qa' in namespace:
+            return namespace.split('-qa')[0]
+        return namespace
     
     def _create_store_with_embeddings(self, namespace: str) -> InMemoryStore:
-        """Create InMemoryStore with cached embeddings (CPU-only)."""
+        """Create InMemoryStore with smart cached embeddings."""
         try:
-            # Simple CPU-only cached embeddings
-            from .cached_embeddings import InstantCachedEmbeddings
+            from .cached_embeddings import SmartCachedEmbeddings
+            import torch
             
-            embeddings = InstantCachedEmbeddings()
+            # Extract sample_id from namespace for filtering
+            sample_id = self._get_sample_id_from_namespace(namespace)
+            
+            # Create smart embeddings that:
+            # 1. Uses our already-loaded cache
+            # 2. Filters by conversation  
+            # 3. Uses shared embedding model (no per-sample initialization!)
+            embeddings = SmartCachedEmbeddings(
+                cache=self._embedding_cache,  # Use already-loaded cache
+                sample_id=sample_id,  # Filter by conversation
+                embedding_model=self._embedding_model,  # Use shared model
+                device='cuda' if torch.cuda.is_available() else 'cpu'
+            )
+            
+            # Get stats for logging
+            stats = embeddings.get_stats()
+            print(f"🧠 Created embeddings for {namespace}: {stats['cached_embeddings']} cached for {sample_id}, shared_model={stats['has_model']}")
             
             index_config = {
                 "embed": embeddings,
@@ -174,6 +221,8 @@ class MemoryBrokerActor:
             
         except Exception as e:
             print(f"❌ Failed to create store with embeddings: {e}")
+            import traceback
+            traceback.print_exc()
             # Fallback to basic store
             store = InMemoryStore()
             print(f"⚠️ Created basic InMemoryStore (no embeddings) for namespace '{namespace}'")

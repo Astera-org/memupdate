@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Important Rules
 
 1. Do NOT git commit or push unless explicitly told to do so.
-2. Python execution must be done in Docker container - local Python lacks dependencies.
-3. File examination and editing should be done locally (files are mounted to Docker).
+2. Python execution must be done in Docker container - local Python lacks dependencies. Ignore this if you're already in a docker container.
+3. File examination and editing should be done locally (files are mounted to Docker). Ignore this if you're already in a docker container.
 4. Do NOT speculate on what the code does or how things might work or be implemented. Always thoroughly read the code before making any assumptions and research more if needed.
 5. We need to use embedding model for semantic search to update memory or retrieve memories for reward computation. This can be done on CPU because it's fast enough as long as we pre-compute the embeddings of memories.
 
