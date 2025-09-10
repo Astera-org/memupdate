@@ -159,7 +159,7 @@ class SmartCachedEmbeddings(Embeddings):
                         results[uncached_indices[idx]] = embedding
                     
                     if new_embeddings:
-                        print(f"✅ Generated {len(new_embeddings)} new embeddings, sample: new_embeddings[0][:10]...")
+                        print(f"✅ Generated {len(new_embeddings)} new embeddings, sample: {new_embeddings[0][:10]}...")
                     else:
                         print(f"⚠️ No new embeddings were generated.")
                     

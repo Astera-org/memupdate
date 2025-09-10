@@ -11,6 +11,9 @@ export WANDB_API_KEY=5fb2c3eb35cb3bc0124a02069ce91eedc6570e5a
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
+# For Ray to avoid setting CUDA_VISIBLE_DEVICES so that embedding model can use GPU
+export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+
 # Container paths
 PROJECT_DIR="/workspace/memupdate/verl"  # Use submodule verl
 MEMUPDATE_DIR="/workspace/memupdate"
