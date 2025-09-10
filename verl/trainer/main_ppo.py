@@ -288,6 +288,16 @@ class TaskRunner:
             collate_fn=collate_fn,
             train_sampler=train_sampler,
         )
+        
+        # MEMUPDATE: Initialize MemoryBrokerActor once for the entire experiment
+        # This must happen before worker initialization to ensure tools can connect to it
+        from memupdate.tools.base_memory_tool import MemoryBrokerActor
+        memory_broker_actor = MemoryBrokerActor.options(
+            name="memory_broker",
+            lifetime="detached",  # Survives driver failures
+        ).remote()
+        print(f"🏢 Initialized MemoryBrokerActor for experiment")
+        
         # Initialize the workers of the trainer.
         trainer.init_workers()
         # Start the training process.
