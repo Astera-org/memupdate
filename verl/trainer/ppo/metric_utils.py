@@ -488,3 +488,178 @@ def process_validation_metrics(
                 data_src2var2metric2val[data_source][var_name][metric_name] = np.mean(prompt_vals)
 
     return data_src2var2metric2val
+
+
+def process_validation_metrics_by_category(
+    data_sources: list[str], sample_inputs: list[str], infos_dict: dict[str, list[Any]], seed: int = 42
+) -> dict[str, dict[str, dict[str, float]]]:
+    """
+    Process validation metrics grouped by category instead of data source.
+
+    This function organizes validation metrics by category (from extra_info), then computes
+    various statistical measures including means, standard deviations, best/worst values,
+    and majority voting results.
+
+    Args:
+        data_sources: List of data source identifiers for each sample.
+        sample_inputs: List of input prompts corresponding to each sample.
+        infos_dict: Dictionary mapping variable names to lists of values for each sample.
+        seed: Random seed for bootstrap sampling. Defaults to 42.
+
+    Returns:
+        A nested dictionary with the structure:
+        {
+            category_name: {
+                variable_name: {
+                    metric_name: value
+                }
+            }
+        }
+
+        Where category_name is like "single_hop", "multi_hop", etc.
+    """
+    # Extract category information from extra_info if available
+    categories = []
+    category_names = {1: "multi_hop", 2: "temporal", 3: "open_domain", 4: "single_hop"}
+    
+    if "category" in infos_dict:
+        categories = [category_names.get(cat, f"category_{cat}") for cat in infos_dict["category"]]
+    else:
+        # Fallback to data source if no category info
+        categories = data_sources
+    
+    # Group metrics by category, prompt and variable
+    cat2prompt2var2vals = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    for sample_idx, category in enumerate(categories):
+        prompt = sample_inputs[sample_idx]
+        var2vals = cat2prompt2var2vals[category][prompt]
+        for var_name, var_vals in infos_dict.items():
+            if var_name != "category":  # Skip category itself
+                var2vals[var_name].append(var_vals[sample_idx])
+
+    # Calculate metrics for each group
+    cat2prompt2var2metric = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    for category, prompt2var2vals in cat2prompt2var2vals.items():
+        for prompt, var2vals in prompt2var2vals.items():
+            for var_name, var_vals in var2vals.items():
+                if isinstance(var_vals[0], str):
+                    continue
+
+                metric = {}
+                n_resps = len(var_vals)
+                metric[f"mean@{n_resps}"] = np.mean(var_vals)
+
+                if n_resps > 1:
+                    metric[f"std@{n_resps}"] = np.std(var_vals)
+
+                    ns = []
+                    n = 2
+                    while n < n_resps:
+                        ns.append(n)
+                        n *= 2
+                    ns.append(n_resps)
+
+                    for n in ns:
+                        [(bon_mean, bon_std), (won_mean, won_std)] = bootstrap_metric(
+                            data=var_vals, subset_size=n, reduce_fns=[np.max, np.min], seed=seed
+                        )
+                        metric[f"best@{n}/mean"], metric[f"best@{n}/std"] = bon_mean, bon_std
+                        metric[f"worst@{n}/mean"], metric[f"worst@{n}/std"] = won_mean, won_std
+                        if var2vals.get("pred", None) is not None:
+                            vote_data = [
+                                {"val": val, "pred": pred} for val, pred in zip(var_vals, var2vals["pred"], strict=True)
+                            ]
+                            [(maj_n_mean, maj_n_std)] = bootstrap_metric(
+                                data=vote_data,
+                                subset_size=n,
+                                reduce_fns=[partial(calc_maj_val, vote_key="pred", val_key="val")],
+                                seed=seed,
+                            )
+                            metric[f"maj@{n}/mean"], metric[f"maj@{n}/std"] = maj_n_mean, maj_n_std
+
+                cat2prompt2var2metric[category][prompt][var_name] = metric
+
+    # Aggregate metrics across prompts
+    cat2var2metric2prompt_vals = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    for category, prompt2var2metric in cat2prompt2var2metric.items():
+        for prompt, var2metric in prompt2var2metric.items():
+            for var_name, metric in var2metric.items():
+                for metric_name, metric_val in metric.items():
+                    cat2var2metric2prompt_vals[category][var_name][metric_name].append(metric_val)
+
+    cat2var2metric2val = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    for category, var2metric2prompt_vals in cat2var2metric2prompt_vals.items():
+        for var_name, metric2prompt_vals in var2metric2prompt_vals.items():
+            for metric_name, prompt_vals in metric2prompt_vals.items():
+                cat2var2metric2val[category][var_name][metric_name] = np.mean(prompt_vals)
+
+    return cat2var2metric2val
+
+
+def compute_data_metrics_by_category(batch: DataProto, use_critic: bool = True) -> dict[str, Any]:
+    """
+    Computes data metrics grouped by category for training.
+    
+    This extends compute_data_metrics to also group metrics by category
+    when category information is available in the batch.
+    
+    Args:
+        batch: A DataProto object containing batch data with category information in non_tensor_batch
+        use_critic: Whether to include critic-specific metrics
+        
+    Returns:
+        Dictionary with both overall metrics and category-specific metrics
+    """
+    # Get overall metrics first
+    overall_metrics = compute_data_metrics(batch, use_critic)
+    
+    # Check if we have category information
+    if "category" not in batch.non_tensor_batch:
+        return overall_metrics
+        
+    categories = batch.non_tensor_batch["category"]
+    category_names = {1: "multi_hop", 2: "temporal", 3: "open_domain", 4: "single_hop"}
+    
+    sequence_score = batch.batch["token_level_scores"].sum(-1)
+    sequence_reward = batch.batch["token_level_rewards"].sum(-1)
+    
+    max_response_length = batch.batch["responses"].shape[-1]
+    response_mask = batch.batch["response_mask"].bool()
+    
+    # Group by category
+    category_metrics = {}
+    for cat_num, cat_name in category_names.items():
+        cat_mask = (categories == cat_num)
+        if not cat_mask.any():
+            continue  # Skip categories with no samples
+            
+        # Get category-specific sequences
+        cat_scores = sequence_score[cat_mask]
+        cat_rewards = sequence_reward[cat_mask] 
+        cat_response_mask = response_mask[cat_mask]
+        
+        if len(cat_scores) == 0:
+            continue
+            
+        # Check for non-aborted samples in this category
+        cat_response_lengths = cat_response_mask.sum(-1).float()
+        cat_aborted_mask = (cat_response_lengths == 0).bool()
+        cat_non_aborted_mask = ~cat_aborted_mask
+        
+        if not cat_non_aborted_mask.any():
+            continue  # Skip if all samples in this category are aborted
+            
+        cat_non_aborted_scores = cat_scores[cat_non_aborted_mask]
+        cat_non_aborted_rewards = cat_rewards[cat_non_aborted_mask]
+        
+        # Compute category-specific metrics (only mean rewards)
+        cat_reward_mean = torch.mean(cat_non_aborted_rewards).detach().item()
+        
+        # Store category metrics (only reward mean)
+        category_metrics.update({
+            f"train-category/{cat_name}/rewards/mean": cat_reward_mean,
+        })
+    
+    # Combine overall and category metrics
+    combined_metrics = {**overall_metrics, **category_metrics}
+    return combined_metrics
