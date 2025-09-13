@@ -289,18 +289,31 @@ class TaskRunner:
             train_sampler=train_sampler,
         )
         
-        # MEMUPDATE: Initialize MemoryBrokerActor once for the entire experiment
-        # This must happen before worker initialization to ensure tools can connect to it
+        # MEMUPDATE: Initialize MemoryBrokerActor BEFORE worker initialization
+        # This ensures workers can register their embedding models during init_workers()
         from memupdate.tools.base_memory_tool import MemoryBrokerActor
+        from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+        
+        # Get a GPU node from Ray cluster
+        gpu_nodes = [node for node in ray.nodes() if node.get("Alive", False) and node.get("Resources", {}).get("GPU", 0) > 0]
+        
+        # MemoryBrokerActor is just a registry - no GPU needed
+        print(f"🏢 Creating MemoryBrokerActor (registry only - no GPU allocation needed)")
         memory_broker_actor = MemoryBrokerActor.options(
             name="memory_broker",
-            lifetime="detached",  # Survives driver failures
+            lifetime="detached",
+            num_cpus=1
         ).remote()
-        print(f"🏢 Initialized MemoryBrokerActor for experiment")
+        
+        conversation_stats = ray.get(memory_broker_actor.get_conversation_stats.remote())        
+        for k, v in conversation_stats.items():
+            print(f"Initial {k}: {v}")
+        print(f"🏢 Initialized MemoryBrokerActor before worker initialization!")
         
         # Initialize the workers of the trainer.
         trainer.init_workers()
-        # Start the training process.
+        print(f"🏢 All workers initialized for experiment, starting training!")
+        
         trainer.fit()
 
 

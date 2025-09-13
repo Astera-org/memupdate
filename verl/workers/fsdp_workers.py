@@ -653,7 +653,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             self.rollout, self.rollout_sharding_manager = self._build_rollout(
                 trust_remote_code=self.config.model.get("trust_remote_code", False)
             )
-
+            
+            # MEMUPDATE: Initialize embedding model on same GPU as rollout worker
+            self._init_embedding_model()
+            
+        # MEMUPDATE: Reference model initialization (moved from _register_embedding_model_with_broker)
         if self._is_ref:
             ref_model_path = self.config.model.path
             ref_model = self.config.ref.get("model", None)
@@ -679,7 +683,68 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.ref.use_remove_padding = use_remove_padding
                 self.config.ref.use_fused_kernels = use_fused_kernels
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
-
+    
+    def _init_embedding_model(self):
+        """MEMUPDATE: Initialize embedding model on same GPU as the rollout worker."""
+        try:
+            from memupdate.data.qwen_embeddings import QwenEmbeddings
+            
+            # Initialize embedding model (will use same GPU as rollout worker)
+            self.embedding_model = QwenEmbeddings()
+            print(f"🚀 Rollout worker initialized embedding model alongside main LLM")
+            
+            # Register the embedding model with MemoryBrokerActor
+            self._register_embedding_model_with_broker()
+            
+        except Exception as e:
+            print(f"⚠️ Failed to initialize embedding model in rollout worker: {e}")
+            self.embedding_model = None
+    
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def embed_documents(self, texts):
+        """MEMUPDATE: Expose embedding functionality for direct tool access."""
+        if not self._is_rollout:
+            print(f"⚠️ embed_documents called on non-rollout worker")
+            return [[0.0] * 1024] * len(texts)  # Fallback
+            
+        if self.embedding_model is None:
+            print(f"⚠️ Rollout worker embedding model not available")
+            return [[0.0] * 1024] * len(texts)  # Fallback
+        
+        try:
+            return self.embedding_model.embed_documents(texts)
+        except Exception as e:
+            print(f"❌ Error in rollout worker embedding: {e}")
+            return [[0.0] * 1024] * len(texts)  # Fallback
+    
+    def _register_embedding_model_with_broker(self):
+        """MEMUPDATE: Register this worker handle with MemoryBrokerActor for direct tool access."""
+        try:
+            from memupdate.tools.base_memory_tool import MemoryStoreManager
+            import ray
+            import os
+            
+            # Simple actor name construction without complex debugging
+            wg_prefix = os.environ.get('WG_PREFIX', '')
+            rank = os.environ.get('RANK', '0')
+            local_rank = os.environ.get('RAY_LOCAL_RANK', '0')
+            world_size = os.environ.get('RAY_LOCAL_WORLD_SIZE', '1')
+            
+            if wg_prefix:
+                pg_idx = int(rank) // int(world_size)
+                actor_name = f"{wg_prefix}WorkerDict_{pg_idx}:{local_rank}"
+            else:
+                worker_id = ray.get_runtime_context().get_worker_id()
+                actor_name = f"rollout_worker_{worker_id}"
+            
+            # Simple registration without complex Ray operations that might interfere
+            MemoryStoreManager.register_rollout_embedding_model(actor_name)
+            print(f"🔗 Registered rollout worker as {actor_name}")
+            
+        except Exception as e:
+            print(f"⚠️ Failed to register rollout worker: {e}")
+            # Don't print full traceback to avoid cluttering logs during init
+        
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
             self.checkpoint_manager = FSDPCheckpointManager(
