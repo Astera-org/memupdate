@@ -98,15 +98,15 @@ class ToolAgentLoop(AgentLoopBase):
         extra_info = kwargs.get("extra_info", {})
         raw_namespace = extra_info.get("namespace", "")
         sample_id = extra_info.get("sample_id", "")
-        # 🔧 MEMUPDATE: Transform base namespace to trial-specific namespace using request_id
         trial_namespace = raw_namespace + "-" + request_id[:8]
 
         # 🔧 MEMUPDATE: Create trial-specific namespace and pre-initialize memory store
         if tools_kwargs:
             for tool_name, tool_config in tools_kwargs.items():
-                tool_config["create_kwargs"]["namespace"] = trial_namespace
+                tool_config["create_kwargs"]["trial_namespace"] = trial_namespace
+                tool_config["execute_kwargs"]["trial_namespace"] = trial_namespace
         if extra_info:
-            extra_info["namespace"] = trial_namespace
+            extra_info["trial_namespace"] = trial_namespace
 
         # 🔧 MEMUPDATE: Pre-initialize the store with the trial-specific namespace
         if trial_namespace and sample_id:
@@ -264,7 +264,9 @@ class ToolAgentLoop(AgentLoopBase):
             tool = self.tools[tool_name]
             kwargs = tools_kwargs.get(tool_name, {})
             instance_id, _ = await tool.create(create_kwargs=kwargs.get("create_kwargs", {}))
-            tool_execution_response, _, _ = await tool.execute(instance_id, tool_args)
+            
+            # 🔧 MEMUPDATE: Pass execute_kwargs instead of extra_info for trial_namespace
+            tool_execution_response, _, _ = await tool.execute(instance_id, tool_args, **kwargs.get("execute_kwargs", {}))
         except Exception as e:
             logger.warning(f"Error when executing tool: {e}")
             return ToolResponse(

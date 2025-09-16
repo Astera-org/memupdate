@@ -867,9 +867,17 @@ class DataProto:
         repeated_non_tensor_batch = {}
         for key, val in self.non_tensor_batch.items():
             if interleave:
-                repeated_non_tensor_batch[key] = np.repeat(val, repeat_times, axis=0)
+                repeated_val = np.repeat(val, repeat_times, axis=0)
             else:
-                repeated_non_tensor_batch[key] = np.tile(val, (repeat_times,) + (1,) * (val.ndim - 1))
+                repeated_val = np.tile(val, (repeat_times,) + (1,) * (val.ndim - 1))
+            
+            # 🔧 MEMUPDATE: Deep copy object references to prevent shared state
+            if val.dtype == object and len(val) > 0:
+                # For object arrays (like dicts), create deep copies to avoid shared references
+                import copy
+                repeated_val = np.array([copy.deepcopy(item) for item in repeated_val], dtype=object)
+            
+            repeated_non_tensor_batch[key] = repeated_val
 
         return type(self)(
             batch=repeated_batch,
